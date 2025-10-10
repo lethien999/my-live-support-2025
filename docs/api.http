@@ -1,0 +1,103 @@
+### Live Support API Test Requests
+
+# Variables
+@baseUrl = http://localhost:4000
+@accessToken = your_access_token_here
+
+### Health Check
+GET {{baseUrl}}/health
+
+### Login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@demo.io",
+  "password": "admin123"
+}
+
+### Register
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "newuser@example.com",
+  "password": "password123",
+  "name": "New User"
+}
+
+### Get Current User
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{accessToken}}
+
+### Get Tickets
+GET {{baseUrl}}/api/tickets?page=1&limit=10
+Authorization: Bearer {{accessToken}}
+
+### Create Ticket
+POST {{baseUrl}}/api/tickets
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "subject": "Test Ticket",
+  "description": "This is a test ticket for API testing",
+  "priority": "Medium"
+}
+
+### Get Ticket by ID
+GET {{baseUrl}}/api/tickets/ticket_id_here
+Authorization: Bearer {{accessToken}}
+
+### Update Ticket
+PATCH {{baseUrl}}/api/tickets/ticket_id_here
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "status": "Pending",
+  "assigneeId": "agent_id_here"
+}
+
+### Get Departments
+GET {{baseUrl}}/api/departments
+Authorization: Bearer {{accessToken}}
+
+### Get Agents
+GET {{baseUrl}}/api/agents
+Authorization: Bearer {{accessToken}}
+
+### Upload File
+POST {{baseUrl}}/api/files
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="test.txt"
+Content-Type: text/plain
+
+This is a test file content.
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### Get File by ID
+GET {{baseUrl}}/api/files/file_id_here
+Authorization: Bearer {{accessToken}}
+
+### Create Rating
+POST {{baseUrl}}/api/ratings
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "ticketId": "ticket_id_here",
+  "score": 5,
+  "comment": "Great service!"
+}
+
+### Get Ratings
+GET {{baseUrl}}/api/ratings?page=1&limit=10
+Authorization: Bearer {{accessToken}}
+
+### Get Rating Stats
+GET {{baseUrl}}/api/ratings/stats
+Authorization: Bearer {{accessToken}}

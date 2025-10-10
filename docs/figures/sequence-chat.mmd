@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant C1 as Customer
+    participant A1 as Agent
+    participant F1 as Frontend (Customer)
+    participant F2 as Frontend (Agent)
+    participant S as Socket.IO Server
+    participant D as Database
+
+    C1->>F1: Gửi tin nhắn
+    F1->>S: socket.emit('message:send', data)
+    S->>S: Validate room access
+    S->>D: Lưu message
+    D-->>S: Message saved
+    S->>S: Broadcast to room
+    S-->>F1: socket.emit('message:receive', message)
+    S-->>F2: socket.emit('message:receive', message)
+    F1-->>C1: Hiển thị tin nhắn
+    F2-->>A1: Hiển thị tin nhắn
+
+    Note over A1,F2: Agent phản hồi
+    A1->>F2: Gửi tin nhắn
+    F2->>S: socket.emit('message:send', data)
+    S->>D: Lưu message
+    S-->>F1: Broadcast message
+    S-->>F2: Broadcast message
