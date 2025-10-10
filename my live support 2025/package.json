@@ -1,0 +1,36 @@
+{
+  "name": "my-live-support-2025",
+  "version": "1.0.0",
+  "description": "Live Support System - Fullstack Chat & Ticket Management",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:db\" \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:db": "docker compose up -d db",
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/api run build && npm --workspace apps/web run build",
+    "start": "npm --workspace apps/api run start",
+    "lint": "npm --workspace apps/api run lint && npm --workspace apps/web run lint",
+    "format": "npm --workspace apps/api run format && npm --workspace apps/web run format",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:studio": "npm --workspace apps/api run prisma:studio"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
