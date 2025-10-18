@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Support - MUJI Design</title>
+    <!-- Google OAuth API - Only OAuth2, no One Tap -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+      console.log('HTML: Google script tag added');
+      
+      // Load Google OAuth API - Only OAuth2
+      function loadGoogleScript() {
+        return new Promise((resolve, reject) => {
+          console.log('HTML: Loading Google OAuth2 API...');
+          
+          // Check if Google OAuth2 is loaded
+          if (window.google && window.google.accounts && window.google.accounts.oauth2) {
+            console.log('HTML: Google OAuth2 already loaded');
+            resolve();
+            return;
+          }
+          
+          // Wait for Google OAuth2 to load
+          let attempts = 0;
+          const maxAttempts = 50; // 5 seconds
+          
+          const checkGoogleOAuth2 = () => {
+            attempts++;
+            
+            if (window.google && window.google.accounts && window.google.accounts.oauth2) {
+              console.log('HTML: ✅ Google OAuth2 loaded successfully');
+              resolve();
+            } else if (attempts >= maxAttempts) {
+              console.log('HTML: ❌ Google OAuth2 failed to load after 5 seconds');
+              reject(new Error('Google OAuth2 timeout'));
+            } else {
+              setTimeout(checkGoogleOAuth2, 100);
+            }
+          };
+          
+          checkGoogleOAuth2();
+        });
+      }
+      
+      window.addEventListener('load', function() {
+        console.log('HTML: Page loaded - Google OAuth enabled');
+        
+        // Load Google OAuth immediately
+        loadGoogleScript()
+          .then(() => {
+            console.log('HTML: ✅ Google API loaded successfully');
+          })
+          .catch((error) => {
+            console.log('HTML: ❌ Google API failed to load:', error.message);
+          });
+      });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
