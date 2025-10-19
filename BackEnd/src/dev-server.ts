@@ -4,11 +4,93 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
-import { connectDatabase } from './db';
+import { connectDatabase, getConnection } from './db';
 import { redisService } from './services/redisService';
+import { InMemoryCache } from './services/inMemoryCache';
+import { AIBotService } from './services/aiBotService';
 
 // Map để lưu trữ token và email người dùng
 const activeTokens = new Map(); // accessToken -> userEmail
+const refreshTokens = new Map(); // refreshToken -> { userEmail, expiresAt }
+
+// Global database connection pool
+let globalPool: any = null;
+
+// Initialize in-memory cache (Redis alternative)
+const cache = InMemoryCache.getInstance();
+
+// Generate JWT-like tokens with expiration
+function generateToken(type: 'access' | 'refresh'): string {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2);
+  const expiration = type === 'access' ? 3600000 : 604800000; // 1 hour for access, 7 days for refresh
+  return `${type}_${timestamp}_${random}_${expiration}`;
+}
+
+// Check if token is expired
+function isTokenExpired(token: string): boolean {
+  try {
+    // Handle Google token format (google_token_timestamp)
+    if (token.startsWith('google_token_')) {
+      const parts = token.split('_');
+      if (parts.length !== 3) return true;
+      
+      const timestamp = parseInt(parts[2]);
+      const now = Date.now();
+      const expiration = 3600000; // 1 hour for Google tokens
+      
+      return (now - timestamp) > expiration;
+    }
+    
+    // Handle regular token format (access_timestamp_random_expiration)
+    const parts = token.split('_');
+    if (parts.length !== 4) return true;
+    
+    const timestamp = parseInt(parts[1]);
+    const expiration = parseInt(parts[3]);
+    const now = Date.now();
+    
+    return (now - timestamp) > expiration;
+  } catch {
+    return true;
+  }
+}
+
+// Initialize database pool
+async function initDatabasePool() {
+  if (globalPool) return globalPool;
+  
+  const sql = require('mssql');
+  const config = {
+    user: 'thien',
+    password: '1909',
+    server: 'localhost',
+    database: 'live_support',
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+    },
+    pool: {
+      max: 20,
+      min: 5,
+      idleTimeoutMillis: 30000,
+      acquireTimeoutMillis: 60000,
+      createTimeoutMillis: 30000,
+      destroyTimeoutMillis: 5000,
+      reapIntervalMillis: 1000,
+      createRetryIntervalMillis: 200
+    }
+  };
+  
+  try {
+    globalPool = await sql.connect(config);
+    console.log('✅ Database pool initialized successfully');
+    return globalPool;
+  } catch (error) {
+    console.error('❌ Database pool initialization failed:', error);
+    throw error;
+  }
+}
 const processedCodes = new Set(); // Track processed codes to avoid duplicates
 
 // Load existing tokens from database on startup
@@ -33,7 +115,7 @@ async function loadActiveTokens() {
       SELECT UserID, Email FROM Users WHERE Email = 'customer@muji.com'
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     if (userResult.recordset.length > 0) {
       const user = userResult.recordset[0];
@@ -93,7 +175,9 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    redis: redisService.isReady() ? 'Connected' : 'Disconnected',
+    redis: 'Disabled - Using In-Memory Cache',
+    cache: cache.getStats(),
+    message: 'Chat system fully functional with SQL + WebSocket + In-Memory Cache'
   });
 });
 
@@ -127,7 +211,7 @@ app.get('/api/departments', async (req, res) => {
       ORDER BY DepartmentName
     `;
 
-    await sql.close();
+    // Pool stays open for reuse
 
     console.log('✅ Departments loaded:', result.recordset.length);
     res.json({
@@ -180,7 +264,7 @@ app.get('/api/tickets', async (req, res) => {
     `;
 
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ error: 'User không tồn tại' });
     }
 
@@ -203,7 +287,7 @@ app.get('/api/tickets', async (req, res) => {
       ORDER BY t.CreatedAt DESC
     `;
 
-    await sql.close();
+    // Pool stays open for reuse
 
     console.log('✅ Tickets loaded:', ticketsResult.recordset.length);
     res.json({
@@ -259,7 +343,7 @@ app.post('/api/tickets', async (req, res) => {
     `;
 
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ error: 'User không tồn tại' });
     }
 
@@ -271,7 +355,7 @@ app.post('/api/tickets', async (req, res) => {
       VALUES (${title}, ${description}, ${departmentId}, ${userId}, ${priority}, 'Open')
     `;
 
-    await sql.close();
+    // Pool stays open for reuse
 
     console.log('✅ Ticket created successfully');
     res.json({
@@ -323,7 +407,7 @@ app.post('/api/auth/login', async (req, res) => {
       WHERE Email = ${email} AND Status = 'Active'
     `;
 
-    await sql.close();
+    // Pool stays open for reuse
 
     console.log('🔍 User found:', userResult.recordset.length > 0);
 
@@ -361,10 +445,27 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Email hoặc mật khẩu không đúng' });
     }
 
-    const accessToken = 'real_token_' + user.UserID;
-    // Lưu trữ token và email vào map tạm thời
+    // Generate tokens with expiration
+    const accessToken = generateToken('access');
+    const refreshToken = generateToken('refresh');
+    
+    // Store tokens
     activeTokens.set(accessToken, user.Email);
+    refreshTokens.set(refreshToken, {
+      userEmail: user.Email,
+      expiresAt: Date.now() + 604800000 // 7 days
+    });
+    
     console.log(`✅ Login successful for ${user.Email}: ${accessToken}`);
+    console.log(`🔍 Active tokens after login:`, Array.from(activeTokens.keys()));
+
+    // Determine role based on email
+    let userRole = 'Customer';
+    if (email === 'admin@muji.com') {
+      userRole = 'Admin';
+    } else if (email === 'agent@muji.com') {
+      userRole = 'Agent';
+    }
 
     res.json({
       success: true,
@@ -373,14 +474,53 @@ app.post('/api/auth/login', async (req, res) => {
         id: user.UserID,
         email: user.Email,
         name: user.FullName,
-        role: email === 'agent@muji.com' ? 'Agent' : 'Customer' // Set role based on email
+        role: userRole
       },
-      tokens: { accessToken: accessToken, refreshToken: 'real_refresh_' + user.UserID }
+      tokens: { accessToken: accessToken, refreshToken: refreshToken }
     });
 
   } catch (error: any) {
     console.error('❌ Login error:', error);
     res.status(500).json({ error: 'Lỗi server khi đăng nhập' });
+  }
+});
+
+// Refresh token endpoint
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, message: 'Refresh token required' });
+    }
+    
+    // Check if refresh token exists and is valid
+    const tokenData = refreshTokens.get(refreshToken);
+    if (!tokenData || Date.now() > tokenData.expiresAt) {
+      refreshTokens.delete(refreshToken);
+      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+    }
+    
+    // Generate new access token
+    const newAccessToken = generateToken('access');
+    
+    // Update active tokens
+    activeTokens.set(newAccessToken, tokenData.userEmail);
+    
+    console.log(`✅ Token refreshed for ${tokenData.userEmail}: ${newAccessToken}`);
+    
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      tokens: {
+        accessToken: newAccessToken,
+        refreshToken: refreshToken // Keep the same refresh token
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Refresh token error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
@@ -421,7 +561,7 @@ app.post('/api/auth/register', async (req, res) => {
     `;
     
     if (existingUser.recordset.length > 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(400).json({ error: 'Email đã được sử dụng' });
     }
     
@@ -435,7 +575,7 @@ app.post('/api/auth/register', async (req, res) => {
       VALUES (${email}, ${hashedPassword}, ${name}, '', '', 'Active', GETDATE())
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     console.log('✅ User registered successfully:', email);
     
@@ -488,7 +628,7 @@ app.get('/api/categories', async (req, res) => {
       ORDER BY CategoryName
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     const categories = categoriesResult.recordset.map((category: any) => ({
       CategoryID: category.CategoryID,
@@ -561,7 +701,7 @@ app.get('/api/products', async (req, res) => {
       ORDER BY p.CreatedAt DESC
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     const products = productsResult.recordset.map((product: any) => ({
       ProductID: product.ProductID,
@@ -637,7 +777,7 @@ app.get('/api/products/:id', async (req, res) => {
       WHERE p.ProductID = ${productId} AND p.IsActive = 1
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     if (productResult.recordset.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
@@ -707,7 +847,7 @@ app.get('/api/cart', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -731,7 +871,7 @@ app.get('/api/cart', async (req, res) => {
       ORDER BY c.AddedAt DESC
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     const cartItems = cartResult.recordset.map((item: any) => ({
       CartID: item.CartID,
@@ -814,7 +954,7 @@ app.post('/api/cart/add', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -826,7 +966,7 @@ app.post('/api/cart/add', async (req, res) => {
     `;
     
     if (productCheck.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ 
         success: false, 
         message: `Product ID ${productId} not found` 
@@ -855,7 +995,7 @@ app.post('/api/cart/add', async (req, res) => {
       console.log('✅ Cart item added:', { userId, productId, quantity });
     }
     
-    await sql.close();
+    // Pool stays open for reuse
     
     res.json({
       success: true,
@@ -924,7 +1064,7 @@ app.delete('/api/cart/:cartId', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -935,7 +1075,7 @@ app.delete('/api/cart/:cartId', async (req, res) => {
       DELETE FROM Cart WHERE CartID = ${cartId} AND UserID = ${userId}
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     console.log('✅ Cart item deleted:', { cartId, userId });
     
@@ -1004,7 +1144,7 @@ app.get('/api/orders', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -1044,7 +1184,7 @@ app.get('/api/orders', async (req, res) => {
         WHERE oi.OrderID = ${order.OrderID}
       `;
       
-      await sql.close();
+      // Pool stays open for reuse
       
       orders.push({
         OrderID: order.OrderID,
@@ -1065,7 +1205,7 @@ app.get('/api/orders', async (req, res) => {
       });
     }
     
-    await sql.close();
+    // Pool stays open for reuse
     
     console.log('✅ Orders loaded for user:', { userId, orderCount: orders.length });
     
@@ -1123,7 +1263,7 @@ app.post('/api/orders', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -1155,7 +1295,7 @@ app.post('/api/orders', async (req, res) => {
       `;
       
       if (productResult.recordset.length === 0) {
-        await sql.close();
+        // Pool stays open for reuse
         return res.status(400).json({ success: false, message: `Product ${item.productId} not found` });
       }
       
@@ -1173,7 +1313,7 @@ app.post('/api/orders', async (req, res) => {
       DELETE FROM Cart WHERE UserID = ${userId}
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     console.log('✅ Order created successfully:', { orderId, orderNumber, userId });
     
@@ -1281,21 +1421,498 @@ app.get('/api/chat/conversations', (req, res) => {
   });
 });
 
-app.get('/api/chat/messages/:roomId', (req, res) => {
-  const { roomId } = req.params;
+// In-memory message storage
+const messageStorage = new Map<string, any[]>();
+
+// Initialize sample messages for each room
+const initializeSampleMessages = () => {
+  // Room 1 - MUJI Store - Clothing
+  messageStorage.set('1', [
+    {
+      id: '1',
+      content: 'Cảm ơn bạn đã quan tâm đến sản phẩm của chúng tôi! Chúng tôi có thể hỗ trợ gì cho bạn?',
+      senderId: 'shop',
+      senderName: 'MUJI Store - Clothing',
+      senderRole: 'Agent',
+      roomId: '1',
+      timestamp: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
+      type: 'text'
+    },
+    {
+      id: '2',
+      content: 'Đây là sản phẩm nổi bật của chúng tôi:',
+      senderId: 'shop',
+      senderName: 'MUJI Store - Clothing',
+      senderRole: 'Agent',
+      roomId: '1',
+      timestamp: new Date(Date.now() - 200000).toISOString(),
+      type: 'product_card',
+      product: {
+        id: 'product_1',
+        name: 'Áo thun cotton MUJI',
+        price: 299000,
+        image: '/images/products/tshirt.jpg',
+        description: 'Áo thun cotton 100% thiết kế tối giản, thoải mái',
+        category: 'Thời trang'
+      }
+    }
+  ]);
+  
+  // Room 2 - MUJI Store - Beauty
+  messageStorage.set('2', [
+    {
+      id: '2',
+      content: 'Chúng tôi có nhiều sản phẩm chăm sóc da chất lượng cao. Bạn quan tâm đến sản phẩm nào?',
+      senderId: 'shop',
+      senderName: 'MUJI Store - Beauty',
+      senderRole: 'Agent',
+      roomId: '2',
+      timestamp: new Date(Date.now() - 600000).toISOString(), // 10 minutes ago
+      type: 'text'
+    },
+    {
+      id: '3',
+      content: 'Thông tin đơn hàng của bạn:',
+      senderId: 'shop',
+      senderName: 'MUJI Store - Beauty',
+      senderRole: 'Agent',
+      roomId: '2',
+      timestamp: new Date(Date.now() - 100000).toISOString(),
+      type: 'order_card',
+      order: {
+        id: 'ORD-2024-001',
+        status: 'processing',
+        total: 850000,
+        items: [
+          {
+            name: 'Kem dưỡng ẩm MUJI',
+            quantity: 2,
+            price: 350000,
+            image: '/images/products/moisturizer.jpg'
+          },
+          {
+            name: 'Sữa rửa mặt MUJI',
+            quantity: 1,
+            price: 150000,
+            image: '/images/products/cleanser.jpg'
+          }
+        ],
+        createdAt: new Date(Date.now() - 600000).toISOString(),
+        estimatedDelivery: '28/12/2024'
+      }
+    }
+  ]);
+  
+  // Room 3 - MUJI Store - Home
+  messageStorage.set('3', [
+    {
+      id: '3',
+      content: 'Bộ chén đĩa gốm sứ đang được ưu đãi đặc biệt! Bạn có muốn xem thêm không?',
+      senderId: 'shop',
+      senderName: 'MUJI Store - Home',
+      senderRole: 'Agent',
+      roomId: '3',
+      timestamp: new Date(Date.now() - 180000).toISOString(), // 3 minutes ago
+      type: 'text'
+    }
+  ]);
+  
+  console.log('📝 Sample messages initialized for all rooms');
+};
+
+// Initialize sample messages
+initializeSampleMessages();
+
+// Order Update API
+app.post('/api/orders/:orderId/update', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status, message, details } = req.body;
+    
+    console.log('📦 Order update received:', { orderId, status, message });
+    
+    // Create order update
+    const orderUpdate = {
+      orderId,
+      status,
+      message: message || `Đơn hàng đã chuyển sang trạng thái: ${status}`,
+      timestamp: new Date().toISOString(),
+      details: details || {}
+    };
+    
+    // Store in message storage for the order room
+    const roomId = `order_${orderId}`;
+    if (!messageStorage.has(roomId)) {
+      messageStorage.set(roomId, []);
+    }
+    
+    const updateMessage = {
+      id: `order_update_${Date.now()}`,
+      content: `📦 Cập nhật đơn hàng #${orderId}\n\n${orderUpdate.message}`,
+      senderId: 'system',
+      senderName: 'Hệ thống',
+      senderRole: 'System',
+      roomId,
+      timestamp: orderUpdate.timestamp,
+      type: 'order_update',
+      orderUpdate
+    };
+    
+    messageStorage.get(roomId)!.push(updateMessage);
+    
+    // Broadcast to all connected clients
+    io.emit('orderUpdate', { orderId, update: orderUpdate, message: updateMessage });
+    
+    res.json({
+      success: true,
+      message: 'Order update sent successfully',
+      data: orderUpdate
+    });
+    
+  } catch (error) {
+    console.error('Error updating order:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Simulate order status change (for testing)
+app.post('/api/orders/:orderId/simulate', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { currentStatus } = req.body;
+    
+    const statusFlow = ['pending', 'processing', 'shipped', 'delivered'];
+    const currentIndex = statusFlow.indexOf(currentStatus);
+    
+    if (currentIndex < statusFlow.length - 1) {
+      const nextStatus = statusFlow[currentIndex + 1];
+      const update = {
+        orderId,
+        status: nextStatus,
+        message: `Đơn hàng đã chuyển sang trạng thái: ${nextStatus}`,
+        timestamp: new Date().toISOString(),
+        details: {
+          trackingNumber: `TRK${Date.now()}`,
+          estimatedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toLocaleDateString('vi-VN')
+        }
+      };
+      
+      // Store and broadcast
+      const roomId = `order_${orderId}`;
+      if (!messageStorage.has(roomId)) {
+        messageStorage.set(roomId, []);
+      }
+      
+      const updateMessage = {
+        id: `order_update_${Date.now()}`,
+        content: `📦 Cập nhật đơn hàng #${orderId}\n\n${update.message}`,
+        senderId: 'system',
+        senderName: 'Hệ thống',
+        senderRole: 'System',
+        roomId,
+        timestamp: update.timestamp,
+        type: 'order_update',
+        orderUpdate: update
+      };
+      
+      messageStorage.get(roomId)!.push(updateMessage);
+      io.emit('orderUpdate', { orderId, update, message: updateMessage });
+      
+      res.json({
+        success: true,
+        message: 'Order status simulated successfully',
+        data: update
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'Order already at final status',
+        data: { currentStatus }
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error simulating order status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Chat Routing API
+app.post('/api/chat/route-to-agent', async (req, res) => {
+  try {
+    const { roomId, customerId, customerName, reason, priority, context } = req.body;
+    
+    console.log('🔄 Chat routing request received:', { roomId, customerId, reason, priority });
+    
+    // Simulate agent assignment
+    const availableAgents = ['agent_1', 'agent_2', 'agent_3'];
+    const assignedAgent = availableAgents[Math.floor(Math.random() * availableAgents.length)];
+    
+    // Calculate estimated wait time based on priority
+    const waitTimes = {
+      'urgent': 0,
+      'high': 30,
+      'medium': 120,
+      'low': 300
+    };
+    
+    const estimatedWaitTime = waitTimes[priority as keyof typeof waitTimes] || 300;
+    
+    // Create routing response
+    const response = {
+      success: true,
+      agentId: assignedAgent,
+      agentName: `Agent ${assignedAgent.split('_')[1]}`,
+      estimatedWaitTime,
+      message: `Đã chuyển chat sang ${assignedAgent}. Thời gian chờ ước tính: ${estimatedWaitTime} giây.`
+    };
+    
+    // Broadcast to all connected clients
+    io.emit('chatRoutingResponse', { roomId, response });
+    
+    // Create routing message
+    const routingMessage = {
+      id: `routing_${Date.now()}`,
+      content: `🔄 Chat đã được chuyển sang ${response.agentName}\n\nKhách hàng: ${customerName}\nLý do: ${reason}\nĐộ ưu tiên: ${priority}`,
+      senderId: 'system',
+      senderName: 'Hệ thống',
+      senderRole: 'System',
+      roomId,
+      timestamp: new Date().toISOString(),
+      type: 'routing_response',
+      routingResponse: response
+    };
+    
+    // Store message
+    if (!messageStorage.has(roomId)) {
+      messageStorage.set(roomId, []);
+    }
+    messageStorage.get(roomId)!.push(routingMessage);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('Error routing chat to agent:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Không thể chuyển chat sang agent' 
+    });
+  }
+});
+
+// Chat rooms API
+// Support chat rooms (for agents)
+app.get('/api/chat/support-rooms', (req, res) => {
+  console.log('🔍 Loading support chat rooms...');
+  
+  const supportRooms = [
+    {
+      id: 1,
+      customerName: 'Nguyễn Văn A',
+      customerId: 1,
+      isOnline: true,
+      lastMessage: 'Tôi cần hỗ trợ về đơn hàng #12345',
+      unreadCount: 2,
+      priority: 'High',
+      status: 'Open'
+    },
+    {
+      id: 2,
+      customerName: 'Trần Thị B',
+      customerId: 2,
+      isOnline: false,
+      lastMessage: 'Cảm ơn bạn đã hỗ trợ!',
+      unreadCount: 0,
+      priority: 'Medium',
+      status: 'Resolved'
+    },
+    {
+      id: 3,
+      customerName: 'Lê Văn C',
+      customerId: 3,
+      isOnline: true,
+      lastMessage: 'Tôi muốn đổi size sản phẩm',
+      unreadCount: 1,
+      priority: 'Low',
+      status: 'Open'
+    }
+  ];
+  
+  console.log('📨 Returning support rooms:', supportRooms.length);
   
   res.json({
-    messages: [
-      {
-        MessageID: 1,
-        RoomID: parseInt(roomId),
-        SenderID: 3,
-        Content: 'Hello, I need help with this product',
-        MessageType: 'Text',
-        CreatedAt: new Date().toISOString()
-      }
-    ]
+    success: true,
+    conversations: supportRooms
   });
+});
+
+// Shop chat rooms (for customers)
+app.get('/api/chat/shop-rooms', (req, res) => {
+  console.log('🔍 Loading shop chat rooms...');
+  
+  const shopRooms = [
+    {
+      id: 1,
+      shopName: 'MUJI Store - Clothing',
+      shopId: 1,
+      orderId: '12345',
+      isOnline: true,
+      lastMessage: 'Đơn hàng đã được xác nhận',
+      unreadCount: 2,
+      orderInfo: {
+        total: 500000,
+        status: 'Processing',
+        items: ['Áo thun cotton', 'Quần jean']
+      }
+    },
+    {
+      id: 2,
+      shopName: 'MUJI Store - Home',
+      shopId: 1,
+      orderId: '12346',
+      isOnline: false,
+      lastMessage: 'Sản phẩm đã được giao thành công',
+      unreadCount: 0,
+      orderInfo: {
+        total: 1200000,
+        status: 'Delivered',
+        items: ['Ghế sofa', 'Bàn trà']
+      }
+    },
+    {
+      id: 3,
+      shopName: 'MUJI Store - Beauty',
+      shopId: 1,
+      orderId: '12347',
+      isOnline: true,
+      lastMessage: 'Chúng tôi có thể hỗ trợ gì cho bạn?',
+      unreadCount: 1,
+      orderInfo: {
+        total: 300000,
+        status: 'Shipped',
+        items: ['Sữa rửa mặt', 'Kem dưỡng ẩm']
+      }
+    }
+  ];
+  
+  console.log('📨 Returning shop rooms:', shopRooms.length);
+  
+  res.json({
+    success: true,
+    conversations: shopRooms
+  });
+});
+
+// Legacy chat rooms (backward compatibility)
+app.get('/api/chat/rooms', (req, res) => {
+  console.log('🔍 Loading chat rooms (legacy)...');
+  
+  const rooms = [
+    {
+      id: 1,
+      shopName: 'MUJI Store - Clothing',
+      shopId: 1,
+      isOnline: true,
+      lastMessage: 'Cảm ơn bạn đã quan tâm đến sản phẩm của chúng tôi!',
+      unreadCount: 2,
+      avatar: '👕',
+      lastMessageTime: new Date(Date.now() - 300000).toISOString()
+    },
+    {
+      id: 2,
+      shopName: 'MUJI Store - Beauty',
+      shopId: 2,
+      isOnline: false,
+      lastMessage: 'Chúng tôi có nhiều sản phẩm chăm sóc da chất lượng cao.',
+      unreadCount: 0,
+      avatar: '💄',
+      lastMessageTime: new Date(Date.now() - 600000).toISOString()
+    },
+    {
+      id: 3,
+      shopName: 'MUJI Store - Home',
+      shopId: 3,
+      isOnline: true,
+      lastMessage: 'Bộ chén đĩa gốm sứ đang được ưu đãi đặc biệt!',
+      unreadCount: 1,
+      avatar: '🏠',
+      lastMessageTime: new Date(Date.now() - 180000).toISOString()
+    }
+  ];
+  
+  console.log('📨 Returning rooms:', rooms.length);
+  
+  res.json({
+    success: true,
+    conversations: rooms
+  });
+});
+
+app.get('/api/chat/messages/:roomId', async (req, res) => {
+  const { roomId } = req.params;
+  
+  console.log('🔍 Loading messages for room:', roomId);
+  
+  try {
+    // 1. Try to get from memory first (fast)
+    let messages = messageStorage.get(roomId) || [];
+    
+    // 2. If no messages in memory, load from SQL Server
+    if (messages.length === 0) {
+      console.log('📨 No messages in memory, loading from SQL Server...');
+      const pool = await getConnection();
+      const result = await pool.request()
+        .input('roomId', parseInt(roomId))
+        .query(`
+          SELECT TOP 50 
+            MessageID as id,
+            RoomID as roomId,
+            SenderID as senderId,
+            Content as content,
+            MessageType as type,
+            CreatedAt as timestamp
+          FROM Messages 
+          WHERE RoomID = @roomId
+          ORDER BY CreatedAt DESC
+        `);
+      
+      messages = result.recordset.map(row => ({
+        id: row.id.toString(),
+        roomId: row.roomId.toString(),
+        senderId: row.senderId.toString(),
+        content: row.content,
+        type: row.type || 'text',
+        timestamp: row.timestamp.toISOString(),
+        senderName: 'User', // Will be updated by frontend
+        senderRole: 'Customer' // Will be updated by frontend
+      }));
+      
+      // Store in memory for next time
+      messageStorage.set(roomId, messages);
+      console.log('💾 Messages loaded from SQL Server and cached in memory');
+    }
+    
+    console.log('📨 Found messages:', messages.length);
+    
+    res.json({
+      success: true,
+      messages: messages.map(msg => ({
+        MessageID: msg.id,
+        RoomID: parseInt(roomId),
+        SenderID: msg.senderId,
+        Content: msg.content,
+        MessageType: msg.type || 'Text',
+        CreatedAt: msg.timestamp
+      }))
+    });
+    
+  } catch (error) {
+    console.error('❌ Error loading messages:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load messages'
+    });
+  }
 });
 
 app.post('/api/chat/send', (req, res) => {
@@ -1408,7 +2025,7 @@ app.get('/api/wishlist', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -1429,7 +2046,7 @@ app.get('/api/wishlist', async (req, res) => {
       ORDER BY w.AddedAt DESC
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     const wishlistItems = wishlistResult.recordset.map((item: any) => ({
       WishlistID: item.WishlistID,
@@ -1519,7 +2136,7 @@ app.get('/api/notifications', async (req, res) => {
     `;
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
+      // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -1542,7 +2159,7 @@ app.get('/api/notifications', async (req, res) => {
       ORDER BY CreatedAt DESC
     `;
     
-    await sql.close();
+    // Pool stays open for reuse
     
     const notifications = notificationsResult.recordset.map((notification: any) => ({
       NotificationID: notification.NotificationID,
@@ -1702,8 +2319,8 @@ app.post('/api/auth/google/exchange', async (req, res) => {
   try {
     const { OAuth2Client } = require('google-auth-library');
         const client = new OAuth2Client(
-          process.env.GOOGLE_CLIENT_ID || 'your-client-id',
-          process.env.GOOGLE_CLIENT_SECRET || 'your-client-secret',
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
           process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5173/auth/google/callback'
         );
     
@@ -1772,7 +2389,7 @@ app.post('/api/auth/google/exchange', async (req, res) => {
         console.log('✅ Google user already exists in database:', userData.email);
       }
       
-      await sql.close();
+      // Pool stays open for reuse
     } catch (dbError) {
       console.error('❌ Database error:', dbError);
       // Continue anyway - don't fail the login
@@ -1821,10 +2438,960 @@ app.post('/api/auth/google/exchange', async (req, res) => {
 // Google OAuth configuration
 app.get('/api/auth/google/config', (req, res) => {
   res.json({
-    clientId: process.env.GOOGLE_CLIENT_ID || 'your-client-id',
+    clientId: process.env.GOOGLE_CLIENT_ID,
     redirectUri: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5173/auth/google/callback'
   });
 });
+
+// ===========================================
+// ADMIN USER MANAGEMENT APIs
+// ===========================================
+
+// Get all users (Admin only)
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
+    
+    // Check if user is admin
+    const pool = await initDatabasePool();
+    
+    const userResult = await pool.request().query(`
+      SELECT UserID, Email, FullName, Phone, Address, Status, CreatedAt 
+      FROM Users WHERE Email = '${userEmail}'
+    `);
+    
+    if (userResult.recordset.length === 0 || userResult.recordset[0].Email !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Get all users
+    const usersResult = await pool.request().query(`
+      SELECT 
+        UserID,
+        Email,
+        FullName,
+        Phone,
+        Address,
+        Status,
+        CreatedAt,
+        CASE 
+          WHEN Email = 'admin@muji.com' THEN 'Admin'
+          WHEN Email = 'agent@muji.com' THEN 'Agent'
+          ELSE 'Customer'
+        END as Role
+      FROM Users 
+      ORDER BY CreatedAt DESC
+    `);
+    
+    res.json({
+      success: true,
+      users: usersResult.recordset
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
+    });
+  }
+});
+
+// Create new user (Admin only)
+app.post('/api/admin/users', async (req, res) => {
+  try {
+    const { email, fullName, phone, address, password, role } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Validate input
+    if (!email || !fullName || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email, full name, and password are required'
+      });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Check if email already exists
+    const existingUser = await sql.query`
+      SELECT UserID FROM Users WHERE Email = ${email}
+    `;
+    
+    if (existingUser.recordset.length > 0) {
+      // Pool stays open for reuse
+      return res.status(400).json({
+        success: false,
+        message: 'Email already exists'
+      });
+    }
+    
+    // Create new user
+    const result = await sql.query`
+      INSERT INTO Users (Email, PasswordHash, FullName, Phone, Address, Status, CreatedAt)
+      VALUES (${email}, ${password}, ${fullName}, ${phone || ''}, ${address || ''}, 'Active', GETDATE())
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'User created successfully',
+      userId: result.recordset.insertId
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin create user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create user',
+      error: error.message
+    });
+  }
+});
+
+// Update user (Admin only)
+app.put('/api/admin/users/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { email, fullName, phone, address, status } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Update user
+    await sql.query`
+      UPDATE Users 
+      SET Email = ${email}, 
+          FullName = ${fullName}, 
+          Phone = ${phone || ''}, 
+          Address = ${address || ''}, 
+          Status = ${status || 'Active'}
+      WHERE UserID = ${userId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'User updated successfully'
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin update user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user',
+      error: error.message
+    });
+  }
+});
+
+// Delete user (Admin only)
+app.delete('/api/admin/users/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Prevent deleting admin account
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    const userResult = await sql.query`
+      SELECT Email FROM Users WHERE UserID = ${userId}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      // Pool stays open for reuse
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    if (userResult.recordset[0].Email === 'admin@muji.com') {
+      // Pool stays open for reuse
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete admin account'
+      });
+    }
+    
+    // Delete user
+    await sql.query`
+      DELETE FROM Users WHERE UserID = ${userId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'User deleted successfully'
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin delete user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete user',
+      error: error.message
+    });
+  }
+});
+
+// ===========================================
+// ADMIN PRODUCT MANAGEMENT APIs
+// ===========================================
+
+// Get all products (Admin only)
+app.get('/api/admin/products', async (req, res) => {
+  try {
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const pool = await initDatabasePool();
+    
+    const productsResult = await pool.request().query(`
+      SELECT 
+        p.ProductID,
+        p.ProductName,
+        p.Description,
+        p.Price,
+        p.StockQuantity,
+        p.ImagePath,
+        p.IsActive as Status,
+        p.CreatedAt,
+        c.CategoryName
+      FROM Products p
+      LEFT JOIN Categories c ON p.CategoryID = c.CategoryID
+      ORDER BY p.CreatedAt DESC
+    `);
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      products: productsResult.recordset
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get products error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch products',
+      error: error.message
+    });
+  }
+});
+
+// Create new product (Admin only)
+app.post('/api/admin/products', async (req, res) => {
+  try {
+    const { productName, description, price, stockQuantity, imagePath, categoryId, status } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Validate input
+    if (!productName || !price || stockQuantity === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product name, price, and stock quantity are required'
+      });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Create new product
+    const result = await sql.query`
+      INSERT INTO Products (ProductName, Description, Price, StockQuantity, ImagePath, CategoryID, Status, CreatedAt)
+      VALUES (${productName}, ${description || ''}, ${price}, ${stockQuantity}, ${imagePath || '/images/products/default.jpg'}, ${categoryId || null}, ${status || 'Active'}, GETDATE())
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'Product created successfully',
+      productId: result.recordset.insertId
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin create product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create product',
+      error: error.message
+    });
+  }
+});
+
+// Update product (Admin only)
+app.put('/api/admin/products/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { productName, description, price, stockQuantity, imagePath, categoryId, status } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Update product
+    await sql.query`
+      UPDATE Products 
+      SET ProductName = ${productName}, 
+          Description = ${description || ''}, 
+          Price = ${price}, 
+          StockQuantity = ${stockQuantity}, 
+          ImagePath = ${imagePath || '/images/products/default.jpg'}, 
+          CategoryID = ${categoryId || null}, 
+          Status = ${status || 'Active'}
+      WHERE ProductID = ${productId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'Product updated successfully'
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin update product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update product',
+      error: error.message
+    });
+  }
+});
+
+// Delete product (Admin only)
+app.delete('/api/admin/products/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Check if product exists
+    const productResult = await sql.query`
+      SELECT ProductID FROM Products WHERE ProductID = ${productId}
+    `;
+    
+    if (productResult.recordset.length === 0) {
+      // Pool stays open for reuse
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+    
+    // Delete product
+    await sql.query`
+      DELETE FROM Products WHERE ProductID = ${productId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'Product deleted successfully'
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin delete product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete product',
+      error: error.message
+    });
+  }
+});
+
+// Get all categories (Admin only)
+app.get('/api/admin/categories', async (req, res) => {
+  try {
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const pool = await initDatabasePool();
+    
+    const categoriesResult = await pool.request().query(`
+      SELECT CategoryID, CategoryName, Description, IconPath, IsActive as Status, CreatedAt
+      FROM Categories 
+      ORDER BY CategoryName
+    `);
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      categories: categoriesResult.recordset
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get categories error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch categories',
+      error: error.message
+    });
+  }
+});
+
+// Create new category (Admin only)
+app.post('/api/admin/categories', async (req, res) => {
+  try {
+    const { categoryName, description, iconPath, status } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Validate input
+    if (!categoryName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category name is required'
+      });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Check if category already exists
+    const existingCategory = await sql.query`
+      SELECT CategoryID FROM Categories WHERE CategoryName = ${categoryName}
+    `;
+    
+    if (existingCategory.recordset.length > 0) {
+      // Pool stays open for reuse
+      return res.status(400).json({
+        success: false,
+        message: 'Category name already exists'
+      });
+    }
+    
+    // Create new category
+    const result = await sql.query`
+      INSERT INTO Categories (CategoryName, Description, IconPath, Status, CreatedAt)
+      VALUES (${categoryName}, ${description || ''}, ${iconPath || '/images/categories/default.jpg'}, ${status || 'Active'}, GETDATE())
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'Category created successfully',
+      categoryId: result.recordset.insertId
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin create category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create category',
+      error: error.message
+    });
+  }
+});
+
+// ===========================================
+// ADMIN ORDER MANAGEMENT APIs
+// ===========================================
+
+// Get all orders (Admin only)
+app.get('/api/admin/orders', async (req, res) => {
+  try {
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const pool = await initDatabasePool();
+    
+    const ordersResult = await pool.request().query(`
+      SELECT 
+        o.OrderID,
+        o.OrderNumber,
+        o.CustomerID as UserID,
+        o.CreatedAt as OrderDate,
+        o.TotalAmount,
+        o.Status,
+        o.ShippingAddress,
+        o.PaymentMethod,
+        'Standard' as ShippingMethod,
+        o.Notes,
+        o.CreatedAt,
+        u.FullName as CustomerName,
+        u.Email as CustomerEmail
+      FROM Orders o
+      LEFT JOIN Users u ON o.CustomerID = u.UserID
+      ORDER BY o.CreatedAt DESC
+    `);
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      orders: ordersResult.recordset
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get orders error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders',
+      error: error.message
+    });
+  }
+});
+
+// Get order statistics (Admin only) - MUST BE BEFORE /:orderId route
+app.get('/api/admin/orders/stats', async (req, res) => {
+  try {
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const pool = await initDatabasePool();
+    
+    // Get order statistics
+    const statsResult = await pool.request().query(`
+      SELECT 
+        COUNT(*) as TotalOrders,
+        SUM(CASE WHEN Status = 'Pending' THEN 1 ELSE 0 END) as PendingOrders,
+        SUM(CASE WHEN Status = 'Processing' THEN 1 ELSE 0 END) as ProcessingOrders,
+        SUM(CASE WHEN Status = 'Shipped' THEN 1 ELSE 0 END) as ShippedOrders,
+        SUM(CASE WHEN Status = 'Delivered' THEN 1 ELSE 0 END) as DeliveredOrders,
+        SUM(CASE WHEN Status = 'Cancelled' THEN 1 ELSE 0 END) as CancelledOrders,
+        SUM(TotalAmount) as TotalRevenue,
+        AVG(TotalAmount) as AverageOrderValue
+      FROM Orders
+    `);
+    
+    // Get recent orders (last 7 days)
+    const recentOrdersResult = await pool.request().query(`
+      SELECT COUNT(*) as RecentOrders
+      FROM Orders
+      WHERE CreatedAt >= DATEADD(day, -7, GETDATE())
+    `);
+    
+    await pool.close();
+    
+    const stats = statsResult.recordset[0];
+    const recentOrders = recentOrdersResult.recordset[0];
+    
+    res.json({
+      success: true,
+      stats: {
+        totalOrders: stats.TotalOrders || 0,
+        pendingOrders: stats.PendingOrders || 0,
+        processingOrders: stats.ProcessingOrders || 0,
+        shippedOrders: stats.ShippedOrders || 0,
+        deliveredOrders: stats.DeliveredOrders || 0,
+        cancelledOrders: stats.CancelledOrders || 0,
+        totalRevenue: stats.TotalRevenue || 0,
+        averageOrderValue: stats.AverageOrderValue || 0,
+        recentOrders: recentOrders.RecentOrders || 0
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get order stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order statistics',
+      error: error.message
+    });
+  }
+});
+
+// Get order details with items (Admin only)
+app.get('/api/admin/orders/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Get order info
+    const orderResult = await sql.query`
+      SELECT 
+        o.OrderID,
+        o.OrderNumber,
+        o.CustomerID as UserID,
+        o.CreatedAt as OrderDate,
+        o.TotalAmount,
+        o.Status,
+        o.ShippingAddress,
+        o.PaymentMethod,
+        'Standard' as ShippingMethod,
+        o.Notes,
+        o.CreatedAt,
+        u.FullName as CustomerName,
+        u.Email as CustomerEmail,
+        u.Phone as CustomerPhone
+      FROM Orders o
+      LEFT JOIN Users u ON o.CustomerID = u.UserID
+      WHERE o.OrderID = ${orderId}
+    `;
+    
+    if (orderResult.recordset.length === 0) {
+      // Pool stays open for reuse
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Get order items
+    const itemsResult = await sql.query`
+      SELECT 
+        oi.OrderItemID,
+        oi.ProductID,
+        oi.Quantity,
+        oi.ProductPrice,
+        oi.SubTotal,
+        p.ProductName,
+        p.ImagePath
+      FROM OrderItems oi
+      LEFT JOIN Products p ON oi.ProductID = p.ProductID
+      WHERE oi.OrderID = ${orderId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      order: orderResult.recordset[0],
+      items: itemsResult.recordset
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin get order details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+});
+
+// Update order status (Admin only)
+app.put('/api/admin/orders/:orderId/status', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status, notes } = req.body;
+    
+    // Check admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail || userEmail !== 'admin@muji.com') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Validate status
+    const validStatuses = ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled', 'Returned'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status. Valid statuses: ' + validStatuses.join(', ')
+      });
+    }
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Check if order exists
+    const orderResult = await sql.query`
+      SELECT OrderID FROM Orders WHERE OrderID = ${orderId}
+    `;
+    
+    if (orderResult.recordset.length === 0) {
+      // Pool stays open for reuse
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Update order status
+    await sql.query`
+      UPDATE Orders 
+      SET Status = ${status},
+          Notes = ${notes || ''}
+      WHERE OrderID = ${orderId}
+    `;
+    
+    // Pool stays open for reuse
+    
+    res.json({
+      success: true,
+      message: 'Order status updated successfully'
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin update order status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update order status',
+      error: error.message
+    });
+  }
+});
+
 
 // Create HTTP server
 const server = createServer(app);
@@ -1840,8 +3407,388 @@ const io = new SocketIOServer(server, {
 });
 
 // Initialize Socket handlers (simplified)
-io.on('connection', (socket) => {
+io.on('connection', (socket: any) => {
   console.log('🔌 Client connected:', socket.id);
+  
+  // Check for token in auth object (from io() constructor)
+  if (socket.handshake.auth && socket.handshake.auth.token) {
+    const token = socket.handshake.auth.token;
+    console.log('🔍 Socket auth token:', token);
+    console.log('🔍 Token type:', typeof token);
+    console.log('🔍 Active tokens count:', activeTokens.size);
+    console.log('🔍 Active tokens:', Array.from(activeTokens.keys()));
+    console.log('🔍 Token exists:', activeTokens.has(token));
+    console.log('🔍 Token expired check:', isTokenExpired(token));
+    
+    // Check if token is a Promise (async issue)
+    if (token && typeof token.then === 'function') {
+      console.log('❌ Token is a Promise, waiting for resolution...');
+      token.then((resolvedToken: string) => {
+        console.log('🔍 Resolved token:', resolvedToken);
+        if (activeTokens.has(resolvedToken) && !isTokenExpired(resolvedToken)) {
+          const userEmail = activeTokens.get(resolvedToken);
+          socket.userEmail = userEmail;
+          console.log('✅ Socket authenticated via resolved token for user:', userEmail);
+          socket.emit('authenticated', { success: true });
+        } else {
+          console.log('❌ Resolved token invalid or expired');
+          socket.emit('authenticated', { success: false, error: 'Invalid token' });
+        }
+      }).catch((error: any) => {
+        console.log('❌ Token promise rejected:', error);
+        socket.emit('authenticated', { success: false, error: 'Token error' });
+      });
+      return;
+    }
+    
+    console.log('🔍 Checking token in activeTokens:', token);
+    console.log('🔍 Active tokens available:', Array.from(activeTokens.keys()));
+    console.log('🔍 Token exists:', activeTokens.has(token));
+    console.log('🔍 Token expired:', isTokenExpired(token));
+    
+    if (activeTokens.has(token) && !isTokenExpired(token)) {
+      const userEmail = activeTokens.get(token);
+      socket.userEmail = userEmail;
+      console.log('✅ Socket authenticated via auth object for user:', userEmail);
+      socket.emit('authenticated', { success: true });
+    } else {
+      if (isTokenExpired(token)) {
+        console.log('❌ Socket authentication failed - token expired');
+        // Remove expired token
+        activeTokens.delete(token);
+      } else {
+        console.log('❌ Socket authentication failed - invalid token in auth object');
+        console.log('🔍 Available tokens:', Array.from(activeTokens.keys()));
+      }
+      socket.emit('authenticated', { success: false, error: 'Invalid token' });
+    }
+  }
+  
+  // Authentication middleware for authenticate event
+  socket.on('authenticate', (data: any) => {
+    const { token } = data;
+    if (token && activeTokens.has(token)) {
+      const userEmail = activeTokens.get(token);
+      socket.userEmail = userEmail;
+      console.log('✅ Socket authenticated via event for user:', userEmail);
+      socket.emit('authenticated', { success: true });
+    } else {
+      console.log('❌ Socket authentication failed - invalid token in event');
+      socket.emit('authenticated', { success: false, error: 'Invalid token' });
+    }
+  });
+  
+  // Join room
+  socket.on('room:join', (data: any) => {
+    const { roomId } = data;
+    if (roomId) {
+      socket.join(roomId);
+      console.log(`🚪 User ${socket.userEmail} joined room: ${roomId}`);
+      
+      // Nếu là Agent, cũng join agent room để nhận tin nhắn
+      if (socket.userEmail && (socket.userEmail.includes('agent') || socket.userEmail.includes('admin'))) {
+        const agentRoomId = `${roomId}_agent`;
+        socket.join(agentRoomId);
+        console.log(`🚪 Agent ${socket.userEmail} also joined agent room: ${agentRoomId}`);
+      }
+      
+      socket.emit('room:joined', { roomId });
+    }
+  });
+  
+  // Leave room
+  socket.on('room:leave', (data: any) => {
+    const { roomId } = data;
+    if (roomId) {
+      socket.leave(roomId);
+      console.log(`🚪 User ${socket.userEmail} left room: ${roomId}`);
+      socket.emit('room:left', { roomId });
+    }
+  });
+  
+  // Send message
+  socket.on('message:send', async (data: any) => {
+    const { content, senderId, senderName, senderRole, roomId, type = 'text' } = data;
+    
+    console.log('📤 Message received:', { content, senderId, senderName, senderRole, roomId, type });
+    
+    if (!roomId || !content) {
+      socket.emit('error', { message: 'Missing roomId or content' });
+      return;
+    }
+    
+    try {
+      // 1. Save to SQL Server first
+      console.log('🔍 Attempting to get database connection...');
+      const pool = await getConnection();
+      console.log('✅ Database connection obtained');
+      
+      console.log('🔍 Executing SQL query with params:', {
+        roomId: parseInt(roomId),
+        senderId: parseInt(senderId) || 1,
+        content: content,
+        messageType: type,
+        createdAt: new Date().toISOString()
+      });
+      
+      const result = await pool.request()
+        .input('roomId', parseInt(roomId))
+        .input('senderId', parseInt(senderId) || 1)
+        .input('content', content)
+        .input('messageType', type)
+        .input('createdAt', new Date().toISOString())
+        .query(`
+          INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt)
+          OUTPUT INSERTED.MessageID
+          VALUES (@roomId, @senderId, @content, @messageType, @createdAt)
+        `);
+      
+      console.log('✅ SQL query executed successfully');
+      console.log('🔍 Query result:', result);
+      
+      const messageId = result.recordset[0].MessageID;
+      console.log('💾 Message saved to SQL Server with ID:', messageId);
+      
+      // 2. Create message object for real-time
+      const message = {
+        id: messageId.toString(),
+        content,
+        senderId: senderId || 'unknown',
+        senderName: senderName || 'Unknown User',
+        senderRole: senderRole || 'Customer',
+        roomId,
+        timestamp: new Date().toISOString(),
+        type
+      };
+      
+      // 3. Store in memory for fast access
+      if (!messageStorage.has(roomId)) {
+        messageStorage.set(roomId, []);
+      }
+      messageStorage.get(roomId)!.push(message);
+      
+      // 4. Cache message for ultra-fast access
+      await cache.cacheMessage(roomId, message.id, message);
+      
+      console.log('💾 Message stored in memory for room:', roomId, 'Total messages:', messageStorage.get(roomId)!.length);
+      
+      // 5. Publish to cache (Redis alternative)
+      await cache.publishMessage(roomId, message);
+      
+      // 6. Broadcast to room (for other customers)
+      socket.to(roomId).emit('message:receive', message);
+      
+      // 7. Also broadcast to agent room (roomId + '_agent')
+      const agentRoomId = `${roomId}_agent`;
+      socket.to(agentRoomId).emit('message:receive', message);
+      
+      // 8. Send confirmation back to sender
+      socket.emit('message:sent', message);
+      
+      console.log('✅ Message broadcasted to room:', roomId, 'and agent room:', agentRoomId);
+      
+    } catch (error: any) {
+      console.error('❌ Error saving message to database:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+      
+      // Fallback: Save to memory only if database fails
+      console.log('🔄 Falling back to memory-only storage...');
+      
+      const message = {
+        id: `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        content,
+        senderId: senderId || 'unknown',
+        senderName: senderName || 'Unknown User',
+        senderRole: senderRole || 'Customer',
+        roomId,
+        timestamp: new Date().toISOString(),
+        type
+      };
+      
+      // Store in memory for fast access
+      if (!messageStorage.has(roomId)) {
+        messageStorage.set(roomId, []);
+      }
+      messageStorage.get(roomId)!.push(message);
+      
+      // Broadcast to room (for other customers)
+      socket.to(roomId).emit('message:receive', message);
+      
+      // Also broadcast to agent room (roomId + '_agent')
+      const agentRoomId = `${roomId}_agent`;
+      socket.to(agentRoomId).emit('message:receive', message);
+      
+      // Send confirmation back to sender
+      socket.emit('message:sent', message);
+      
+      console.log('✅ Message saved to memory only (database failed)');
+    }
+
+    // 🤖 AI BOT LOGIC - Chỉ phản hồi cho tin nhắn từ Customer
+    // Nếu Agent gửi tin nhắn, đánh dấu room này đã có Agent xử lý
+    if (senderRole === 'Agent' || senderRole === 'Admin') {
+      console.log(`👨‍💼 Agent ${senderName} is handling room ${roomId} - AI Bot will be disabled`);
+      // Có thể lưu trạng thái này vào cache hoặc database
+      await cache.set(`agent_handling_${roomId}`, true, 300); // 5 phút
+    }
+    
+    if (senderRole === 'Customer') {
+      try {
+        // Kiểm tra xem có nên sử dụng bot không
+        const roomMessages = messageStorage.get(roomId) || [];
+        const isFirstMessage = roomMessages.length === 1; // Tin nhắn đầu tiên
+        
+        // Kiểm tra Agent có đang online trong room không
+        const agentRoomId = `${roomId}_agent`;
+        const agentRoom = io.sockets.adapter.rooms.get(agentRoomId);
+        const agentOnline = agentRoom && agentRoom.size > 0;
+        
+        // Kiểm tra Agent có đang xử lý room này không (từ cache)
+        const agentHandling = await cache.get(`agent_handling_${roomId}`);
+        
+        // Kiểm tra tin nhắn gần nhất từ Agent (trong 5 phút qua)
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        const recentAgentMessage = roomMessages
+          .filter(msg => (msg.senderRole === 'Agent' || msg.senderRole === 'Admin') && 
+                        new Date(msg.timestamp) > fiveMinutesAgo)
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+        
+        console.log('🤖 AI Bot Check:', {
+          roomId,
+          isFirstMessage,
+          agentOnline,
+          agentHandling,
+          recentAgentMessage: recentAgentMessage ? {
+            sender: recentAgentMessage.senderName,
+            time: recentAgentMessage.timestamp,
+            content: recentAgentMessage.content.substring(0, 50) + '...'
+          } : null
+        });
+        
+        // Chỉ sử dụng bot nếu:
+        // 1. Tin nhắn đầu tiên VÀ không có Agent đang xử lý HOẶC
+        // 2. Không có Agent online VÀ không có tin nhắn gần đây từ Agent VÀ không có Agent đang xử lý
+        const shouldUseBot = (isFirstMessage && !agentHandling) || 
+                            (!agentOnline && !recentAgentMessage && !agentHandling);
+        
+        console.log('🤖 AI Bot Decision:', {
+          shouldUseBot,
+          reason: shouldUseBot ? 
+            (isFirstMessage && !agentHandling ? 'First message, no agent handling' :
+             !agentOnline && !recentAgentMessage && !agentHandling ? 'No agent online/recent message/handling' : 'Unknown') :
+            (agentHandling ? 'Agent is handling' :
+             agentOnline ? 'Agent is online' :
+             recentAgentMessage ? 'Recent agent message' : 'Unknown')
+        });
+
+        if (shouldUseBot) {
+          console.log('🤖 AI Bot: Processing customer message for bot response');
+          
+          // Tạo context cho AI Bot
+          const context = {
+            shopName: 'MUJI Store',
+            customerName: senderName || 'bạn',
+            isFirstMessage,
+            productCategory: 'sản phẩm nội thất và đồ dùng gia đình',
+            roomId
+          };
+
+          // Gửi tin nhắn đến AI Bot
+          const botResponse = await AIBotService.sendMessage(content, context);
+          
+          // Tạo tin nhắn bot
+          const botMessage = AIBotService.createBotMessage(botResponse, roomId);
+          
+          // Lưu tin nhắn bot vào storage
+          messageStorage.get(roomId)!.push(botMessage);
+          
+          // Define agentRoomId for bot broadcasting
+          const agentRoomId = `${roomId}_agent`;
+          
+          // Broadcast tin nhắn bot đến room
+          socket.to(roomId).emit('message:receive', botMessage);
+          socket.to(agentRoomId).emit('message:receive', botMessage);
+          
+          // Gửi tin nhắn bot về cho người gửi
+          socket.emit('message:receive', botMessage);
+          
+          console.log('🤖 AI Bot: Response sent:', botResponse);
+        }
+      } catch (error) {
+        console.error('🤖 AI Bot: Error processing message:', error);
+      }
+    }
+  });
+  
+  // Typing indicators
+  socket.on('typing:start', async (data: any) => {
+    const { roomId } = data;
+    if (roomId) {
+      // Update cache
+      await cache.setTyping(roomId, socket.userEmail || 'Unknown User', true);
+      
+      socket.to(roomId).emit('typing:start', { 
+        roomId, 
+        user: socket.userEmail || 'Unknown User' 
+      });
+    }
+  });
+  
+  socket.on('typing:stop', async (data: any) => {
+    const { roomId } = data;
+    if (roomId) {
+      // Update cache
+      await cache.setTyping(roomId, socket.userEmail || 'Unknown User', false);
+      
+      socket.to(roomId).emit('typing:stop', { 
+        roomId, 
+        user: socket.userEmail || 'Unknown User' 
+      });
+    }
+  });
+  
+  // Request rooms
+  socket.on('rooms:request', async () => {
+    try {
+      // Mock rooms for now - in production, get from database
+      const rooms = [
+        {
+          id: '1',
+          name: 'MUJI Store - Clothing',
+          type: 'customer-shop',
+          participants: ['customer', 'shop'],
+          unreadCount: 0,
+          isActive: true
+        },
+        {
+          id: '2', 
+          name: 'MUJI Store - Beauty',
+          type: 'customer-shop',
+          participants: ['customer', 'shop'],
+          unreadCount: 1,
+          isActive: true
+        },
+        {
+          id: '3',
+          name: 'MUJI Store - Home', 
+          type: 'customer-shop',
+          participants: ['customer', 'shop'],
+          unreadCount: 0,
+          isActive: true
+        }
+      ];
+      
+      socket.emit('rooms:list', rooms);
+      console.log('📋 Sent rooms list to user:', socket.userEmail);
+    } catch (error) {
+      console.error('❌ Error getting rooms:', error);
+      socket.emit('error', { message: 'Failed to get rooms' });
+    }
+  });
   
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
@@ -1858,13 +3805,13 @@ async function startServer() {
     // Connect to database
     await connectDatabase();
     
-    // Connect to Redis (optional)
+    // Try to connect to Docker Redis
     try {
       await redisService.connect();
-      console.log('✅ Redis connected successfully');
-    } catch (redisError) {
-      console.log('⚠️ Redis not available, continuing without Redis');
-      console.log('   Install Redis for better performance: npm install redis');
+      console.log('✅ Docker Redis connected successfully');
+    } catch (error: any) {
+      console.log('⚠️ Docker Redis connection failed, using in-memory cache:', error.message);
+      console.log('📊 Cache stats:', cache.getStats());
     }
     
     // Start HTTP server
@@ -1883,7 +3830,7 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, shutting down gracefully');
-  redisService.disconnect();
+  // redisService.disconnect(); // Redis disabled
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
@@ -1892,7 +3839,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('🛑 SIGINT received, shutting down gracefully');
-  redisService.disconnect();
+  // redisService.disconnect(); // Redis disabled
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);

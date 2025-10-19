@@ -28,6 +28,7 @@
   "dependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/mssql": "^9.1.8",
+    "@types/pg": "^8.15.5",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
@@ -44,7 +45,8 @@
     "morgan": "^1.10.0",
     "mssql": "^12.0.0",
     "multer": "^1.4.5-lts.1",
-    "redis": "^4.6.12",
+    "pg": "^8.16.3",
+    "redis": "^5.8.3",
     "socket.io": "^4.7.4",
     "socket.io-client": "^4.8.1",
     "swagger-jsdoc": "^6.2.8",

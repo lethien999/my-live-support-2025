@@ -8,6 +8,7 @@ class RedisService {
 
   async connect(): Promise<void> {
     try {
+      // Redis v5 - Sử dụng URL format đơn giản hơn
       this.client = createClient({
         url: process.env.REDIS_URL || 'redis://localhost:6379',
         socket: {
@@ -53,7 +54,7 @@ class RedisService {
 
   async disconnect(): Promise<void> {
     if (this.client) {
-      await this.client.disconnect();
+      await this.client.destroy(); // v5: disconnect() -> destroy()
       this.client = null;
       this.isConnected = false;
     }
