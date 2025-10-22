@@ -6,17 +6,18 @@ import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
-import ChatPage from './pages/ChatPage';
-import ShopChatPage from './pages/ShopChatPage';
-import AgentChatPage from './pages/AgentChatPage';
-import TicketPage from './pages/TicketPage';
+import AdminDashboardPage from './pages/AdminDashboardPage';
+import CustomerChatPage from './pages/CustomerChatPage';
+import './services/TokenSyncService'; // Auto-start token sync
+import TicketPageNew from './pages/TicketPageNew';
 import ProductsPage from './pages/ProductsPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import CartPage from './pages/CartPage';
 import CheckoutPage from './pages/CheckoutPage';
+import AgentSupportDashboard from './pages/AgentSupportDashboard';
 import OrderManagementPage from './pages/OrderManagementPage';
-// import TestChatPage from './pages/TestChatPage';
-import GoogleCallbackPage from './pages/GoogleCallbackPage';
+import TicketManagementPage from './pages/TicketManagementPage';
+import ChatShopPage from './pages/ChatShopPage';
 
 function App() {
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
@@ -42,14 +43,16 @@ function App() {
         return <GoogleCallbackPage />;
       case '/dashboard':
         return <DashboardPage />;
-      case '/chat':
-        return <ChatPage />;
-      case '/shop-chat':
-        return <ShopChatPage />;
-      case '/agent-chat':
-        return <AgentChatPage />;
+      case '/admin':
+        return <AdminDashboardPage />;
+      case '/customer-chat':
+        return <CustomerChatPage />;
+      case '/agent-dashboard':
+        return <AgentSupportDashboard />;
       case '/tickets':
-        return <TicketPage />;
+        return <TicketPageNew />;
+      case '/ticket-management':
+        return <TicketManagementPage />;
       case '/products':
         return <ProductsPage />;
       case '/product':
@@ -58,6 +61,8 @@ function App() {
         return <CartPage />;
       case '/checkout':
         return <CheckoutPage />;
+      case '/shop-chat':
+        return <ChatShopPage />;
       case '/orders':
         return <OrderManagementPage />;
       // case '/test-chat':
@@ -67,6 +72,15 @@ function App() {
         return <HomePage />;
     }
   };
+
+  // Check if current page should hide header/footer
+  const isChatPage = currentPath.startsWith('/customer-chat') || 
+                     currentPath.startsWith('/agent-chat') || 
+                     currentPath.startsWith('/shop-chat');
+
+  if (isChatPage) {
+    return getCurrentPage();
+  }
 
   return (
     <div style={{

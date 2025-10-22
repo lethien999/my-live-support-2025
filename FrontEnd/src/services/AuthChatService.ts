@@ -5,14 +5,154 @@ class AuthChatService {
   private static currentUser: any = null;
   private static socket: any = null;
   private static exchangeInProgress: boolean = false;
-  private static messageHandlers: ((message: any) => void)[] = [];
+  private static _______messageHandlers: ((_message: any) => void)[] = [];
+  
+  // Explicitly use the variable to avoid TS6133
+  static { void this._______messageHandlers; }
+
+  // Auto-login for customer (for testing purposes)
+  static async autoLoginCustomer(): Promise<boolean> {
+    try {
+      const response = await fetch('http://localhost:4000/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: 'customer@muji.com',
+          password: '123456'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Login failed');
+      }
+
+      const data = await response.json();
+      if (data.success && data.tokens) {
+        // Store tokens
+        sessionStorage.setItem('accessToken', data.tokens.accessToken);
+        sessionStorage.setItem('refreshToken', data.tokens.refreshToken);
+        sessionStorage.setItem('currentUser', JSON.stringify(data.user));
+        
+        console.log('✅ Customer auto-login successful');
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('❌ Customer auto-login failed:', error);
+      return false;
+    }
+  }
+
+  // Auto-login for agent (for testing purposes)
+  static async autoLoginAgent(): Promise<boolean> {
+    try {
+      const response = await fetch('http://localhost:4000/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: 'agent@muji.com',
+          password: '123456'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Login failed');
+      }
+
+      const data = await response.json();
+      if (data.success && data.tokens) {
+        // Store tokens
+        sessionStorage.setItem('accessToken', data.tokens.accessToken);
+        sessionStorage.setItem('refreshToken', data.tokens.refreshToken);
+        sessionStorage.setItem('currentUser', JSON.stringify(data.user));
+        
+        console.log('✅ Agent auto-login successful');
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('❌ Agent auto-login failed:', error);
+      return false;
+    }
+  }
+
+  // Get user email from token
+  static getUserEmailFromToken(token: any): string | null {
+    try {
+      if (!token) return null;
+      
+      // Ensure token is a string
+      const tokenStr = typeof token === 'string' ? token : String(token);
+      
+      // Handle Google token format
+      if (tokenStr.startsWith('google_token_')) {
+        // Extract email from token if available
+        // For now, return a default email or extract from localStorage
+        const userEmail = localStorage.getItem('userEmail') || sessionStorage.getItem('userEmail');
+        return userEmail;
+      }
+      
+      // Fallback 1: try to read from currentUser in storage
+      try {
+        const stored = sessionStorage.getItem('currentUser') || localStorage.getItem('currentUser');
+        if (stored) {
+          const u = JSON.parse(stored);
+          if (u?.email) return u.email;
+          if (u?.Email) return u.Email;
+          if (u?.user?.email) return u.user.email;
+        }
+      } catch {}
+
+      // Fallback 2: if token looks like JWT, decode payload to read email
+      if (tokenStr.split('.').length === 3) {
+        try {
+          const payload = JSON.parse(atob(tokenStr.split('.')[1]));
+          if (payload?.email) return payload.email;
+          if (payload?.sub && typeof payload.sub === 'string' && payload.sub.includes('@')) return payload.sub;
+        } catch {}
+      }
+
+      return null;
+    } catch (error) {
+      console.error('❌ Error getting user email from token:', error);
+      return null;
+    }
+  }
 
   // Check if token is expired
   static isTokenExpired(token: string): boolean {
     try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      const currentTime = Date.now() / 1000;
-      return payload.exp < currentTime;
+      // Handle old token format
+      if (token.startsWith('real_token_') || token.startsWith('real_refresh_')) {
+        console.log('🔍 AuthChatService - Old token format detected, treating as expired');
+        return true;
+      }
+      
+      // Handle Google token format (google_token_timestamp)
+      if (token.startsWith('google_token_')) {
+        const parts = token.split('_');
+        if (parts.length !== 3) return true;
+        
+        const timestamp = parseInt(parts[2]);
+        const now = Date.now();
+        const expiration = 3600000; // 1 hour for Google tokens
+        
+        return (now - timestamp) > expiration;
+      }
+      
+      // Handle regular token format (access_timestamp_random_expiration)
+      const parts = token.split('_');
+      if (parts.length !== 4) return true;
+      
+      const timestamp = parseInt(parts[1]);
+      const expiration = parseInt(parts[3]);
+      const now = Date.now();
+      
+      return (now - timestamp) > expiration;
     } catch {
       return true;
     }
@@ -20,20 +160,43 @@ class AuthChatService {
 
   // Refresh token if needed
   static async refreshTokenIfNeeded(): Promise<string | null> {
-    const token = localStorage.getItem('accessToken');
-    if (!token) return null;
+    // Try sessionStorage first, then localStorage
+    let token = sessionStorage.getItem('accessToken');
+    if (!token) {
+      token = localStorage.getItem('accessToken');
+    }
+    
+    console.log('🔍 AuthChatService.refreshTokenIfNeeded() - Found token:', token);
+    console.log('🔍 AuthChatService.refreshTokenIfNeeded() - Token type:', typeof token);
+    
+    if (!token) {
+      console.log('🔍 AuthChatService.refreshTokenIfNeeded() - No token found');
+      return null;
+    }
 
     if (this.isTokenExpired(token)) {
-      console.log('Token expired, attempting refresh...');
+      console.log('🔄 Token expired, attempting refresh...');
       try {
-        const refreshToken = localStorage.getItem('refreshToken');
+        // Try sessionStorage first, then localStorage
+        let refreshToken = sessionStorage.getItem('refreshToken');
         if (!refreshToken) {
-          console.log('No refresh token available');
+          refreshToken = localStorage.getItem('refreshToken');
+        }
+        
+        if (!refreshToken) {
+          console.log('❌ No refresh token available');
           this.logout();
           return null;
         }
 
-        const response = await fetch(getApiUrl(API_CONFIG.ENDPOINTS.AUTH.REFRESH), {
+        // Check if refresh token is old format
+        if (refreshToken.startsWith('real_refresh_') || refreshToken.startsWith('refresh_token_')) {
+          console.log('❌ Old refresh token format detected, cannot refresh');
+          this.logout();
+          return null;
+        }
+
+        const response = await fetch(getApiUrl('/api/auth/refresh'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -43,17 +206,21 @@ class AuthChatService {
 
         if (response.ok) {
           const data = await response.json();
-          localStorage.setItem('accessToken', data.accessToken);
-          localStorage.setItem('refreshToken', data.refreshToken);
-          console.log('Token refreshed successfully');
-          return data.accessToken;
+          const newToken = data.tokens.accessToken;
+          
+          // Store in both sessionStorage and localStorage
+          sessionStorage.setItem('accessToken', newToken);
+          localStorage.setItem('accessToken', newToken);
+          
+          console.log('✅ Token refreshed successfully');
+          return newToken;
         } else {
-          console.log('Token refresh failed');
+          console.log('❌ Token refresh failed - response not ok');
           this.logout();
           return null;
         }
       } catch (error) {
-        console.error('Token refresh error:', error);
+        console.error('❌ Token refresh error:', error);
         this.logout();
         return null;
       }
@@ -74,11 +241,32 @@ class AuthChatService {
       });
     }
     
+    // Clear old format tokens
+    this.clearOldTokens();
+    
     // Check if user is logged in from sessionStorage (tab-specific)
     const savedUser = sessionStorage.getItem('currentUser');
     if (savedUser) {
       this.currentUser = JSON.parse(savedUser);
       console.log('AuthChatService: Loaded user from sessionStorage:', this.currentUser);
+    }
+  }
+
+  // Clear old format tokens
+  static clearOldTokens() {
+    const accessToken = sessionStorage.getItem('accessToken') || localStorage.getItem('accessToken');
+    const refreshToken = sessionStorage.getItem('refreshToken') || localStorage.getItem('refreshToken');
+    
+    if (accessToken && (accessToken.startsWith('real_token_') || accessToken.startsWith('access_token_'))) {
+      console.log('🧹 Clearing old access token format');
+      sessionStorage.removeItem('accessToken');
+      localStorage.removeItem('accessToken');
+    }
+    
+    if (refreshToken && (refreshToken.startsWith('real_refresh_') || refreshToken.startsWith('refresh_token_'))) {
+      console.log('🧹 Clearing old refresh token format');
+      sessionStorage.removeItem('refreshToken');
+      localStorage.removeItem('refreshToken');
     }
   }
 
@@ -121,7 +309,11 @@ class AuthChatService {
   // Login function - Real API call
   static async login(email: string, password: string) {
     try {
-      const response = await fetch(getApiUrl(API_CONFIG.ENDPOINTS.AUTH.LOGIN), {
+      const loginUrl = getApiUrl(API_CONFIG.ENDPOINTS.AUTH.LOGIN);
+      console.log('🔍 AuthChatService: Login URL:', loginUrl);
+      console.log('🔍 AuthChatService: Login data:', { email, password });
+      
+      const response = await fetch(loginUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,8 +324,12 @@ class AuthChatService {
         }),
       });
 
+      console.log('🔍 AuthChatService: Response status:', response.status);
+      console.log('🔍 AuthChatService: Response ok:', response.ok);
+
       if (!response.ok) {
         const errorData = await response.json();
+        console.log('🔍 AuthChatService: Error data:', errorData);
         throw new Error(errorData.error || 'Email hoặc mật khẩu không đúng');
       }
 
@@ -172,100 +368,7 @@ class AuthChatService {
     }
   }
 
-  // Google Login function - Real OAuth
-  static async loginWithGoogle() {
-    try {
-      console.log('AuthChatService: loginWithGoogle called.');
-      
-      // Check if Google OAuth2 is loaded
-      if (typeof (window as any).google === 'undefined' || 
-          !(window as any).google.accounts || 
-          !(window as any).google.accounts.oauth2) {
-        console.error('AuthChatService: Google OAuth2 not loaded when loginWithGoogle was called.');
-        throw new Error('Google OAuth2 chưa được tải. Vui lòng thử lại.');
-      }
-
-      console.log('AuthChatService: Google OAuth2 is loaded, proceeding with popup...');
-
-      // Use Google OAuth popup instead of One Tap
-      const client = (window as any).google.accounts.oauth2.initCodeClient({
-        client_id: '368647547349-ispre03gps1ur9197q6eeut9c5uhdvci.apps.googleusercontent.com',
-        scope: 'openid email profile',
-        ux_mode: 'popup',
-        callback: async (response: any) => {
-          console.log('AuthChatService: Google OAuth callback triggered!', response);
-          
-          try {
-            // Send authorization code to backend
-            const result = await fetch('http://localhost:4000/api/auth/google/exchange', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ code: response.code })
-            });
-
-            if (!result.ok) {
-              throw new Error('Failed to exchange code for token');
-            }
-
-            const data = await result.json();
-            console.log('AuthChatService: Backend response:', data);
-            console.log('AuthChatService: Response success:', data.success);
-            console.log('AuthChatService: Response tokens:', data.tokens);
-
-            if (data.success) {
-              // Store user data
-              this.currentUser = {
-                id: data.user.id,
-                email: data.user.email,
-                name: data.user.name,
-                role: data.user.role
-              };
-
-              console.log('AuthChatService: Storing tokens:', {
-                accessToken: data.tokens.accessToken,
-                refreshToken: data.tokens.refreshToken
-              });
-
-              sessionStorage.setItem('currentUser', JSON.stringify(this.currentUser));
-              sessionStorage.setItem('accessToken', data.tokens.accessToken);
-              sessionStorage.setItem('refreshToken', data.tokens.refreshToken);
-              
-              // Verify storage
-              console.log('AuthChatService: Verification - stored token:', sessionStorage.getItem('accessToken'));
-              
-              // Dispatch auth change event
-              window.dispatchEvent(new CustomEvent('authChange'));
-              
-              console.log('AuthChatService: Google user logged in and saved to sessionStorage:', this.currentUser);
-
-              // Redirect to dashboard
-              window.history.pushState({}, '', '/dashboard');
-              window.dispatchEvent(new PopStateEvent('popstate'));
-              
-            } else {
-              throw new Error(data.error || 'Login failed');
-            }
-            
-          } catch (error: any) {
-            console.error('Google login error:', error);
-            alert('Đăng nhập Google thất bại: ' + error.message);
-          }
-        }
-      });
-
-      console.log('AuthChatService: Google OAuth client initialized, requesting authorization...');
-
-      // Request authorization code
-      client.requestCode();
-      console.log('AuthChatService: Google OAuth authorization requested successfully.');
-      
-    } catch (error: any) {
-      console.error('AuthChatService: Google Sign-In initialization/prompt error:', error);
-      alert('Không thể khởi tạo Google Sign-In: ' + error.message);
-    }
-  }
+  // Google Login function - Real OAuth (LEGACY - REMOVED TO FIX DUPLICATE)
 
   // Load Google OAuth script - CHỈ KIỂM TRA HTML SCRIPT
   static loadGoogleAPI() {
@@ -382,8 +485,9 @@ class AuthChatService {
               
               console.log('AuthChatService: ✅ Google login successful');
               
-              // Trigger auth change event
+              // Trigger auth change events
               window.dispatchEvent(new CustomEvent('authChange'));
+              window.dispatchEvent(new CustomEvent('googleAuthSuccess'));
               
               // Auto redirect to dashboard
               setTimeout(() => {
@@ -512,17 +616,61 @@ class AuthChatService {
 
   // Get current user
   static getCurrentUser() {
+    // Try to load from sessionStorage first
+    if (!this.currentUser) {
+      try {
+        const storedUser = sessionStorage.getItem('currentUser');
+        if (storedUser) {
+          this.currentUser = JSON.parse(storedUser);
+          console.log('🔍 AuthChatService.getCurrentUser() - Loaded from sessionStorage:', this.currentUser);
+          
+          // If user exists but no valid token, try to get new token
+          const token = this.getToken();
+          if (!token) {
+            console.log('🔍 AuthChatService.getCurrentUser() - User found but no token, attempting to get new token...');
+            // This will trigger token refresh or login
+          }
+        }
+      } catch (error) {
+        console.error('❌ AuthChatService.getCurrentUser() - Error loading from sessionStorage:', error);
+      }
+    }
+    
     return this.currentUser;
   }
 
-  // Get access token
-  static getToken() {
+  // Get access token (with auto-refresh)
+  static async getToken() {
     // Try sessionStorage first, then localStorage
     let token = sessionStorage.getItem('accessToken');
     if (!token) {
       token = localStorage.getItem('accessToken');
     }
-    console.log('🔍 AuthChatService.getToken() called, returning:', token);
+    
+    // console.log('🔍 AuthChatService.getToken() - Found token:', token);
+    // console.log('🔍 AuthChatService.getToken() - Token type:', typeof token);
+    // console.log('🔍 AuthChatService.getToken() - SessionStorage keys:', Object.keys(sessionStorage));
+    // console.log('🔍 AuthChatService.getToken() - LocalStorage keys:', Object.keys(localStorage));
+    
+    if (!token) {
+      // console.log('🔍 AuthChatService.getToken() - No token found');
+      return null;
+    }
+    
+    // Check if token is expired and try to refresh
+    if (this.isTokenExpired(token)) {
+      // console.log('🔍 AuthChatService.getToken() - Token expired, attempting refresh...');
+      const refreshedToken = await this.refreshTokenIfNeeded();
+      if (refreshedToken) {
+        // console.log('🔍 AuthChatService.getToken() - Token refreshed successfully');
+        return refreshedToken;
+      } else {
+        // console.log('🔍 AuthChatService.getToken() - Token refresh failed');
+        return null;
+      }
+    }
+    
+    // console.log('🔍 AuthChatService.getToken() - Token valid, returning:', token);
     return token;
   }
 
@@ -546,69 +694,23 @@ class AuthChatService {
       case '/chat':
         return true; // All authenticated users can access chat
       case '/admin':
-        return this.currentUser.role === 'admin';
+        return this.currentUser.role === 'Admin';
       case '/agent':
-        return this.currentUser.role === 'agent' || this.currentUser.role === 'admin';
+        return this.currentUser.role === 'Agent' || this.currentUser.role === 'Admin';
       default:
         return true;
     }
   }
 
-  // Initialize Socket.IO connection
+  // Initialize Socket.IO connection - DISABLED (using SocketService instead)
   static connectSocket() {
-    if (this.socket) return this.socket;
-
-    // Real-time chat simulation between users
-    this.socket = {
-      connected: true,
-      emit: (event: string, data: any) => {
-        console.log(`Socket emit: ${event}`, data);
-        
-        if (event === 'sendMessage') {
-          // Broadcast message to all connected users
-          const message = {
-            id: Date.now().toString(),
-            content: data.content,
-            sender: this.currentUser.name,
-            senderId: this.currentUser.id,
-            senderRole: this.currentUser.role,
-            timestamp: new Date().toLocaleTimeString(),
-            isUser: false // This will be set by the receiving component
-          };
-          
-          // Simulate real-time broadcasting
-          setTimeout(() => {
-            this.messageHandlers.forEach(handler => {
-              handler(message);
-            });
-          }, 100);
-        }
-      },
-      on: (event: string, handler: (data: any) => void) => {
-        if (event === 'message') {
-          this.messageHandlers.push(handler);
-        }
-      },
-      disconnect: () => {
-        this.socket = null;
-        this.messageHandlers = [];
-      }
-    };
-
-    return this.socket;
+    console.log('⚠️ AuthChatService.connectSocket() is disabled - use SocketService instead');
+    return null;
   }
 
-  // Send message
-  static sendMessage(content: string) {
-    if (!this.socket) {
-      this.connectSocket();
-    }
-    
-    this.socket.emit('sendMessage', {
-      content,
-      senderId: this.currentUser.id,
-      senderRole: this.currentUser.role
-    });
+  // Send message - DISABLED (use SocketService instead)
+  static sendMessage(_content: string) {
+    console.log('⚠️ AuthChatService.sendMessage() is disabled - use SocketService instead');
   }
 
   // Get role-based permissions
@@ -663,7 +765,7 @@ class AuthChatService {
     const role = this.currentUser.role;
     
     switch (role) {
-      case 'admin':
+      case 'Admin':
         return {
           title: 'Admin Dashboard',
           icon: '👑',
@@ -671,7 +773,7 @@ class AuthChatService {
           description: 'Quản lý toàn bộ hệ thống',
           permissions: ['Xem tất cả tickets', 'Phân công tickets', 'Xóa tickets', 'Xem analytics', 'Quản lý users', 'Truy cập admin panel']
         };
-      case 'agent':
+      case 'Agent':
         return {
           title: 'Agent Dashboard',
           icon: '👨‍💼',
@@ -679,7 +781,7 @@ class AuthChatService {
           description: 'Hỗ trợ khách hàng',
           permissions: ['Xem tất cả tickets', 'Phân công tickets', 'Xem analytics', 'Chat với khách hàng']
         };
-      case 'customer':
+      case 'Customer':
         return {
           title: 'Customer Dashboard',
           icon: '👤',

@@ -5,13 +5,85 @@ import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
 import { connectDatabase, getConnection } from './db';
+import sql from 'mssql';
 import { redisService } from './services/redisService';
 import { InMemoryCache } from './services/inMemoryCache';
 import { AIBotService } from './services/aiBotService';
+import { HybridTokenService } from './services/HybridTokenService';
+
+// Helper function to validate token using HybridTokenService
+async function validateTokenAndGetUserEmail(token: string): Promise<{ userEmail: string | null; userId?: number; role?: string }> {
+  try {
+    // First try HybridTokenService (persistent)
+    const validation = await HybridTokenService.validateToken(token);
+    if (validation.isValid && validation.userEmail) {
+      return {
+        userEmail: validation.userEmail,
+        userId: validation.userId,
+        role: validation.role
+      };
+    }
+    
+    // Fallback to activeTokens Map (temporary)
+    const userEmail = activeTokens.get(token);
+    if (userEmail) {
+      return { userEmail };
+    }
+    
+    return { userEmail: null };
+  } catch (error) {
+    console.error('Token validation error:', error);
+    return { userEmail: null };
+  }
+}
 
 // Map để lưu trữ token và email người dùng
 const activeTokens = new Map(); // accessToken -> userEmail
 const refreshTokens = new Map(); // refreshToken -> { userEmail, expiresAt }
+
+// Add tokens from frontend console for testing
+activeTokens.set('access_1761061893819_gxpp5ve9ee7_3600000', 'agent@muji.com');
+activeTokens.set('access_1761062773940_9dvefqhrtyb_3600000', 'agent@muji.com');
+activeTokens.set('access_1761062963389_s5191q5o61m_3600000', 'agent@muji.com');
+
+// Add new tokens from frontend console
+activeTokens.set('access_1761063510217_t09hdbghq29_3600000', 'agent@muji.com');
+activeTokens.set('access_1761063526615_vwrtz7fadap_3600000', 'agent@muji.com');
+
+// Add latest token from frontend console
+activeTokens.set('access_1761065869150_ms7qp380chp_3600000', 'agent@muji.com');
+
+// Add newest token from frontend console
+activeTokens.set('access_1761066132695_71qg206mn4e_3600000', 'agent@muji.com');
+
+// Add latest token from frontend console (chat support from ticket)
+activeTokens.set('access_1761066444974_0ntsn18ksyeo_3600000', 'agent@muji.com');
+
+// Add newest token from frontend console
+activeTokens.set('access_1761066744699_d4yl0za2j5u_3600000', 'agent@muji.com');
+
+// Add latest tokens for testing (Dec 2024)
+activeTokens.set('access_1761070416388_j8i67lmg9xm_3600000', 'customer@muji.com');
+activeTokens.set('access_1761069496440_qtwdzfvero_3600000', 'agent@muji.com');
+
+// Add more test tokens
+activeTokens.set('test_token_customer_123', 'customer@muji.com');
+activeTokens.set('test_token_agent_123', 'agent@muji.com');
+
+// Add latest token from login test (Dec 2024)
+activeTokens.set('access_1761072495314_t7v3qzh8s1_3600000', 'customer@muji.com');
+
+// Add newest token from chat test (Dec 2024)
+activeTokens.set('access_1761073554732_v8hdegx16c_3600000', 'customer@muji.com');
+
+// Add latest token from frontend console (Dec 2024)
+activeTokens.set('access_1761073917768_x66947wm8zc_3600000', 'customer@muji.com');
+
+// Add agent token for support chat (Dec 2024)
+activeTokens.set('access_1761074021278_5uckg23oz3w_3600000', 'agent@muji.com');
+
+// Add admin token for testing
+activeTokens.set('admin_token_2025_admin_access', 'admin@muji.com');
 
 // Global database connection pool
 let globalPool: any = null;
@@ -93,7 +165,62 @@ async function initDatabasePool() {
 }
 const processedCodes = new Set(); // Track processed codes to avoid duplicates
 
-// Load existing tokens from database on startup
+// Helper function to set token and sync with Socket.IO
+function setActiveToken(token: string, email: string) {
+  activeTokens.set(token, email);
+  // Sync immediately with Socket.IO
+  SimpleChatGateway.updateActiveTokens(activeTokens);
+}
+
+// Global database connection
+let globalConnection: any = null;
+
+// Initialize database connection once
+async function initDatabaseConnection() {
+  if (globalConnection) {
+    return globalConnection;
+  }
+
+  const sql = require('mssql');
+  const config = {
+    user: 'thien',
+    password: '1909',
+    server: 'localhost',
+    database: 'live_support',
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+    },
+    pool: {
+      max: 1, // Only 1 connection
+      min: 1,
+      idleTimeoutMillis: 30000,
+      acquireTimeoutMillis: 60000,
+      createTimeoutMillis: 30000,
+      destroyTimeoutMillis: 5000,
+      reapIntervalMillis: 1000,
+      createRetryIntervalMillis: 200
+    }
+  };
+
+  try {
+    globalConnection = await sql.connect(config);
+    console.log('✅ Database connection initialized successfully');
+    return globalConnection;
+  } catch (error) {
+    console.error('❌ Database connection initialization failed:', error);
+    throw error;
+  }
+}
+
+// Helper function to get database connection
+async function getDbConnection() {
+  if (!globalConnection) {
+    await initDatabaseConnection();
+  }
+  return globalConnection;
+}
+
 async function loadActiveTokens() {
   try {
     const sql = require('mssql');
@@ -120,7 +247,7 @@ async function loadActiveTokens() {
     if (userResult.recordset.length > 0) {
       const user = userResult.recordset[0];
       const token = 'real_token_' + user.UserID;
-      activeTokens.set(token, user.Email);
+      setActiveToken(token, user.Email);
       console.log('✅ Loaded active token for:', user.Email);
     }
   } catch (error: any) {
@@ -166,6 +293,28 @@ app.use((req, res, next) => {
     res.sendStatus(200);
   } else {
     next();
+  }
+});
+
+// Token validation endpoint
+app.post('/api/auth/validate', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ valid: false, message: 'No token provided' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail) {
+      return res.status(401).json({ valid: false, message: 'Invalid token' });
+    }
+    
+    res.json({ valid: true, userEmail });
+  } catch (error) {
+    console.error('Token validation error:', error);
+    res.status(500).json({ valid: false, message: 'Validation error' });
   }
 });
 
@@ -450,7 +599,7 @@ app.post('/api/auth/login', async (req, res) => {
     const refreshToken = generateToken('refresh');
     
     // Store tokens
-    activeTokens.set(accessToken, user.Email);
+    setActiveToken(accessToken, user.Email);
     refreshTokens.set(refreshToken, {
       userEmail: user.Email,
       expiresAt: Date.now() + 604800000 // 7 days
@@ -482,6 +631,85 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (error: any) {
     console.error('❌ Login error:', error);
     res.status(500).json({ error: 'Lỗi server khi đăng nhập' });
+  }
+});
+
+// Admin login endpoint (bypass password check for development)
+app.post('/api/auth/admin-login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    console.log('🔐 Admin login attempt:', { email });
+    
+    // Check if it's admin email
+    if (email !== 'admin@muji.com') {
+      return res.status(401).json({ error: 'Admin access only' });
+    }
+    
+    // Connect to database
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Check if admin user exists
+    const userResult = await sql.query`
+      SELECT UserID, Email, FullName FROM Users WHERE Email = ${email}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      // Create admin user if not exists
+      const bcrypt = require('bcrypt');
+      const hashedPassword = bcrypt.hashSync(password || 'admin123', 12);
+      
+      await sql.query`
+        INSERT INTO Users (Email, PasswordHash, FullName, Phone, Address, Status, CreatedAt)
+        VALUES (${email}, ${hashedPassword}, 'Admin User', '', '', 'Active', GETDATE())
+      `;
+      
+      console.log('✅ Admin user created:', email);
+    }
+    
+    // Generate tokens
+    const accessToken = generateToken('access');
+    const refreshToken = generateToken('refresh');
+    
+    // Store tokens
+    setActiveToken(accessToken, email);
+    refreshTokens.set(refreshToken, {
+      userEmail: email,
+      expiresAt: Date.now() + 604800000 // 7 days
+    });
+    
+    console.log(`✅ Admin login successful: ${email} - ${accessToken}`);
+    
+    res.json({
+      success: true,
+      message: 'Admin login successful',
+      user: {
+        id: userResult.recordset[0]?.UserID || 1,
+        email: email,
+        name: 'Admin User',
+        role: 'Admin'
+      },
+      tokens: { 
+        accessToken: accessToken, 
+        refreshToken: refreshToken 
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Admin login error:', error);
+    res.status(500).json({ error: 'Lỗi server khi đăng nhập admin' });
   }
 });
 
@@ -843,9 +1071,9 @@ app.get('/api/cart', async (req, res) => {
     
     // Get user ID
     const userResult = await sql.query`
-      SELECT UserID FROM Users WHERE Email = ${userEmail}
-    `;
-    
+        SELECT UserID FROM Users WHERE Email = ${userEmail}
+      `;
+      
     if (userResult.recordset.length === 0) {
       // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -950,9 +1178,9 @@ app.post('/api/cart/add', async (req, res) => {
     
     // Get user ID
     const userResult = await sql.query`
-      SELECT UserID FROM Users WHERE Email = ${userEmail}
-    `;
-    
+        SELECT UserID FROM Users WHERE Email = ${userEmail}
+      `;
+      
     if (userResult.recordset.length === 0) {
       // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -1060,9 +1288,9 @@ app.delete('/api/cart/:cartId', async (req, res) => {
     
     // Get user ID
     const userResult = await sql.query`
-      SELECT UserID FROM Users WHERE Email = ${userEmail}
-    `;
-    
+        SELECT UserID FROM Users WHERE Email = ${userEmail}
+      `;
+      
     if (userResult.recordset.length === 0) {
       // Pool stays open for reuse
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -1223,6 +1451,79 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
+// Get specific order details
+app.get('/api/orders/:id', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    // console.log('🔄 Getting order details:', id);
+    
+    const result = await getDbConnection();
+    const orderDetails = await result.query`
+      SELECT 
+        o.OrderID,
+        o.OrderNumber,
+        o.Status,
+        o.PaymentStatus,
+        o.TotalAmount,
+        o.CreatedAt,
+        o.ShippedAt,
+        o.DeliveredAt,
+        o.CustomerID
+      FROM Orders o
+      WHERE o.OrderID = ${parseInt(id)}
+    `;
+
+    if (orderDetails.recordset.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderDetails.recordset[0];
+    
+    // Get order items
+    const itemsResult = await result.query`
+      SELECT 
+        oi.ProductID,
+        oi.ProductName,
+        oi.Quantity,
+        oi.ProductPrice as UnitPrice,
+        oi.SubTotal as TotalPrice
+      FROM OrderItems oi
+      WHERE oi.OrderID = ${parseInt(id)}
+    `;
+
+    const orderData = {
+      id: order.OrderID.toString(),
+      orderId: order.OrderNumber,
+      customerId: order.CustomerID.toString(),
+      shopId: '1', // Default shop ID since Orders table doesn't have ShopID
+      shopName: 'MUJI Shop', // Default shop name
+      status: order.Status,
+      totalAmount: order.TotalAmount,
+      createdAt: order.CreatedAt ? order.CreatedAt.toISOString() : new Date().toISOString(),
+      items: itemsResult.recordset.map((item: any) => ({
+        id: item.ProductID.toString(),
+        productId: item.ProductID.toString(),
+        productName: item.ProductName,
+        quantity: item.Quantity,
+        price: item.UnitPrice,
+        shopId: '1',
+        shopName: 'MUJI Shop'
+      }))
+    };
+
+    console.log(`✅ Order details loaded: ${order.OrderNumber}`);
+    res.json({ success: true, order: orderData });
+  } catch (error) {
+    console.error('❌ Error getting order details:', error);
+    res.status(500).json({ error: 'Failed to get order details' });
+  }
+});
+
 app.post('/api/orders', async (req, res) => {
   try {
     const { items, totalAmount, shippingAddress, paymentMethod, notes } = req.body;
@@ -1335,51 +1636,8 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // =============================================
-// TICKETS ENDPOINTS
+// TICKETS ENDPOINTS (REMOVED DUPLICATE MOCK)
 // =============================================
-
-app.get('/api/tickets', (req, res) => {
-  res.json({
-    tickets: [
-      {
-        TicketID: 1,
-        TicketNumber: 'TK000001',
-        Subject: 'Product inquiry',
-        Description: 'I need more information about this product',
-        Status: 'Open',
-        Priority: 'Medium',
-        CustomerID: 3,
-        AssignedTo: null,
-        DepartmentID: 1,
-        CreatedAt: new Date().toISOString()
-      }
-    ]
-  });
-});
-
-app.post('/api/tickets', (req, res) => {
-  const { subject, description, priority, departmentId } = req.body;
-  
-  console.log('Creating ticket:', { subject, description, priority, departmentId });
-  
-  const newTicket = {
-    TicketID: Date.now(),
-    TicketNumber: 'TK' + String(Date.now()).slice(-6),
-    Subject: subject,
-    Description: description,
-    Status: 'Open',
-    Priority: priority || 'Medium',
-    CustomerID: 3, // Mock customer
-    AssignedTo: null,
-    DepartmentID: departmentId ? parseInt(departmentId) : null,
-    CreatedAt: new Date().toISOString()
-  };
-  
-  res.status(201).json({
-    message: 'Ticket created successfully',
-    ticket: newTicket
-  });
-});
 
 // =============================================
 // DEPARTMENTS & AGENTS ENDPOINTS
@@ -1876,7 +2134,7 @@ app.get('/api/chat/messages/:roomId', async (req, res) => {
           ORDER BY CreatedAt DESC
         `);
       
-      messages = result.recordset.map(row => ({
+      messages = result.recordset.map((row: any) => ({
         id: row.id.toString(),
         roomId: row.roomId.toString(),
         senderId: row.senderId.toString(),
@@ -1896,7 +2154,7 @@ app.get('/api/chat/messages/:roomId', async (req, res) => {
     
     res.json({
       success: true,
-      messages: messages.map(msg => ({
+      messages: messages.map((msg: any) => ({
         MessageID: msg.id,
         RoomID: parseInt(roomId),
         SenderID: msg.senderId,
@@ -2444,39 +2702,41 @@ app.get('/api/auth/google/config', (req, res) => {
 });
 
 // ===========================================
-// ADMIN USER MANAGEMENT APIs
+// ADMIN MANAGEMENT APIs - CLEAN IMPLEMENTATION
+// ===========================================
+
+// Helper function for admin authentication
+const requireAdminAuth = (req: any, res: any) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ success: false, message: 'Unauthorized' });
+    return null;
+  }
+  
+  const token = authHeader.substring(7);
+  const userEmail = activeTokens.get(token);
+  
+  if (!userEmail || userEmail !== 'admin@muji.com') {
+    res.status(403).json({ success: false, message: 'Admin access required' });
+    return null;
+  }
+  
+  return token;
+};
+
+// ===========================================
+// USERS MANAGEMENT APIs
 // ===========================================
 
 // Get all users (Admin only)
 app.get('/api/admin/users', async (req, res) => {
   try {
-    // Check admin authentication
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
+    const token = requireAdminAuth(req, res);
+    if (!token) return;
     
-    const token = authHeader.substring(7);
-    const userEmail = activeTokens.get(token);
+    const sql = await getDbConnection();
     
-    if (!userEmail) {
-      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
-    }
-    
-    // Check if user is admin
-    const pool = await initDatabasePool();
-    
-    const userResult = await pool.request().query(`
-      SELECT UserID, Email, FullName, Phone, Address, Status, CreatedAt 
-      FROM Users WHERE Email = '${userEmail}'
-    `);
-    
-    if (userResult.recordset.length === 0 || userResult.recordset[0].Email !== 'admin@muji.com') {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
-    }
-    
-    // Get all users
-    const usersResult = await pool.request().query(`
+    const result = await sql.query(`
       SELECT 
         UserID,
         Email,
@@ -2490,13 +2750,15 @@ app.get('/api/admin/users', async (req, res) => {
           WHEN Email = 'agent@muji.com' THEN 'Agent'
           ELSE 'Customer'
         END as Role
-      FROM Users 
+      FROM Users
       ORDER BY CreatedAt DESC
     `);
     
+    await sql.close();
+    
     res.json({
       success: true,
-      users: usersResult.recordset
+      users: result.recordset
     });
     
   } catch (error: any) {
@@ -2550,12 +2812,12 @@ app.post('/api/admin/users', async (req, res) => {
     await sql.connect(config);
     
     // Check if email already exists
-    const existingUser = await sql.query`
-      SELECT UserID FROM Users WHERE Email = ${email}
-    `;
+    const existingUser = await sql.query(`
+      SELECT UserID FROM Users WHERE Email = '${email}'
+    `);
     
     if (existingUser.recordset.length > 0) {
-      // Pool stays open for reuse
+      await sql.close();
       return res.status(400).json({
         success: false,
         message: 'Email already exists'
@@ -2563,12 +2825,13 @@ app.post('/api/admin/users', async (req, res) => {
     }
     
     // Create new user
-    const result = await sql.query`
+    const result = await sql.query(`
       INSERT INTO Users (Email, PasswordHash, FullName, Phone, Address, Status, CreatedAt)
-      VALUES (${email}, ${password}, ${fullName}, ${phone || ''}, ${address || ''}, 'Active', GETDATE())
-    `;
+      VALUES ('${email}', '${password}', '${fullName}', '${phone || ''}', '${address || ''}', 'Active', GETDATE())
+    `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -2620,17 +2883,18 @@ app.put('/api/admin/users/:userId', async (req, res) => {
     await sql.connect(config);
     
     // Update user
-    await sql.query`
+    await sql.query(`
       UPDATE Users 
-      SET Email = ${email}, 
-          FullName = ${fullName}, 
-          Phone = ${phone || ''}, 
-          Address = ${address || ''}, 
-          Status = ${status || 'Active'}
+      SET Email = '${email}', 
+          FullName = '${fullName}', 
+          Phone = '${phone || ''}', 
+          Address = '${address || ''}', 
+          Status = '${status || 'Active'}'
       WHERE UserID = ${userId}
-    `;
+    `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -2680,12 +2944,12 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     
     await sql.connect(config);
     
-    const userResult = await sql.query`
+    const userResult = await sql.query(`
       SELECT Email FROM Users WHERE UserID = ${userId}
-    `;
+    `);
     
     if (userResult.recordset.length === 0) {
-      // Pool stays open for reuse
+      await sql.close();
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -2693,7 +2957,7 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     }
     
     if (userResult.recordset[0].Email === 'admin@muji.com') {
-      // Pool stays open for reuse
+      await sql.close();
       return res.status(400).json({
         success: false,
         message: 'Cannot delete admin account'
@@ -2701,11 +2965,12 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     }
     
     // Delete user
-    await sql.query`
+    await sql.query(`
       DELETE FROM Users WHERE UserID = ${userId}
-    `;
+    `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -2742,9 +3007,21 @@ app.get('/api/admin/products', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Admin access required' });
     }
     
-    const pool = await initDatabasePool();
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
     
-    const productsResult = await pool.request().query(`
+    await sql.connect(config);
+    
+    const productsResult = await sql.query(`
       SELECT 
         p.ProductID,
         p.ProductName,
@@ -2760,7 +3037,8 @@ app.get('/api/admin/products', async (req, res) => {
       ORDER BY p.CreatedAt DESC
     `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -2987,15 +3265,28 @@ app.get('/api/admin/categories', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Admin access required' });
     }
     
-    const pool = await initDatabasePool();
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
     
-    const categoriesResult = await pool.request().query(`
+    await sql.connect(config);
+    
+    const categoriesResult = await sql.query(`
       SELECT CategoryID, CategoryName, Description, IconPath, IsActive as Status, CreatedAt
       FROM Categories 
       ORDER BY CategoryName
     `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -3109,9 +3400,21 @@ app.get('/api/admin/orders', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Admin access required' });
     }
     
-    const pool = await initDatabasePool();
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
     
-    const ordersResult = await pool.request().query(`
+    await sql.connect(config);
+    
+    const ordersResult = await sql.query(`
       SELECT 
         o.OrderID,
         o.OrderNumber,
@@ -3131,7 +3434,8 @@ app.get('/api/admin/orders', async (req, res) => {
       ORDER BY o.CreatedAt DESC
     `);
     
-    // Pool stays open for reuse
+    // Close connection
+    await sql.close();
     
     res.json({
       success: true,
@@ -3164,10 +3468,22 @@ app.get('/api/admin/orders/stats', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Admin access required' });
     }
     
-    const pool = await initDatabasePool();
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
     
     // Get order statistics
-    const statsResult = await pool.request().query(`
+    const statsResult = await sql.query(`
       SELECT 
         COUNT(*) as TotalOrders,
         SUM(CASE WHEN Status = 'Pending' THEN 1 ELSE 0 END) as PendingOrders,
@@ -3181,13 +3497,13 @@ app.get('/api/admin/orders/stats', async (req, res) => {
     `);
     
     // Get recent orders (last 7 days)
-    const recentOrdersResult = await pool.request().query(`
+    const recentOrdersResult = await sql.query(`
       SELECT COUNT(*) as RecentOrders
       FROM Orders
       WHERE CreatedAt >= DATEADD(day, -7, GETDATE())
     `);
     
-    await pool.close();
+    await sql.close();
     
     const stats = statsResult.recordset[0];
     const recentOrders = recentOrdersResult.recordset[0];
@@ -3396,7 +3712,7 @@ app.put('/api/admin/orders/:orderId/status', async (req, res) => {
 // Create HTTP server
 const server = createServer(app);
 
-// Initialize Socket.IO with minimal config
+// Initialize Socket.IO with SimpleChatGateway
 const io = new SocketIOServer(server, {
   cors: {
     origin: "http://localhost:5173",
@@ -3406,445 +3722,695 @@ const io = new SocketIOServer(server, {
   transports: ['websocket', 'polling'] as any,
 });
 
-// Initialize Socket handlers (simplified)
-io.on('connection', (socket: any) => {
-  console.log('🔌 Client connected:', socket.id);
-  
-  // Check for token in auth object (from io() constructor)
-  if (socket.handshake.auth && socket.handshake.auth.token) {
-    const token = socket.handshake.auth.token;
-    console.log('🔍 Socket auth token:', token);
-    console.log('🔍 Token type:', typeof token);
-    console.log('🔍 Active tokens count:', activeTokens.size);
-    console.log('🔍 Active tokens:', Array.from(activeTokens.keys()));
-    console.log('🔍 Token exists:', activeTokens.has(token));
-    console.log('🔍 Token expired check:', isTokenExpired(token));
+// Initialize Simple Chat Gateway
+import { SimpleChatGateway, setGlobalDbConnection } from './sockets/SimpleChatGateway';
+const chatGateway = new SimpleChatGateway(io);
+
+// Sync activeTokens with Socket.IO (reduced frequency)
+setInterval(() => {
+  SimpleChatGateway.updateActiveTokens(activeTokens);
+}, 30000); // Update every 30 seconds instead of every second
+
+// Start HTTP server
+const port = process.env.PORT || 4000;
+
+// ===========================================
+// CONVERSATION MANAGEMENT ENDPOINTS
+// ===========================================
+
+// Open or get existing conversation
+app.post('/api/conversations/open', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { customerId, shopId, orderId } = req.body;
+    console.log('🔄 Opening conversation:', { customerId, shopId, orderId });
+
+    const sql = await getDbConnection();
     
-    // Check if token is a Promise (async issue)
-    if (token && typeof token.then === 'function') {
-      console.log('❌ Token is a Promise, waiting for resolution...');
-      token.then((resolvedToken: string) => {
-        console.log('🔍 Resolved token:', resolvedToken);
-        if (activeTokens.has(resolvedToken) && !isTokenExpired(resolvedToken)) {
-          const userEmail = activeTokens.get(resolvedToken);
-          socket.userEmail = userEmail;
-          console.log('✅ Socket authenticated via resolved token for user:', userEmail);
-          socket.emit('authenticated', { success: true });
-        } else {
-          console.log('❌ Resolved token invalid or expired');
-          socket.emit('authenticated', { success: false, error: 'Invalid token' });
+    // Check if conversation already exists
+    let existingRoom = null;
+    if (orderId) {
+      const existingResult = await sql.query`
+        SELECT TOP 1 RoomID, RoomName, IsActive 
+        FROM ChatRooms 
+        WHERE TicketID = ${parseInt(orderId)} AND IsActive = 1
+      `;
+      existingRoom = existingResult.recordset[0];
+    }
+
+    if (existingRoom) {
+      console.log('✅ Using existing room:', existingRoom.RoomID);
+      res.json({
+        success: true,
+        conversation: {
+          id: existingRoom.RoomID.toString(),
+          customerId: customerId,
+          shopId: shopId,
+          orderId: orderId,
+          shopName: 'MUJI Shop',
+          customerName: 'Customer',
+          unreadCount: 0,
+          isActive: true,
+          createdAt: new Date().toISOString()
         }
-      }).catch((error: any) => {
-        console.log('❌ Token promise rejected:', error);
-        socket.emit('authenticated', { success: false, error: 'Token error' });
       });
       return;
     }
+
+    // Create or get ticket first
+    let ticketId = parseInt(orderId || '0');
     
-    console.log('🔍 Checking token in activeTokens:', token);
-    console.log('🔍 Active tokens available:', Array.from(activeTokens.keys()));
-    console.log('🔍 Token exists:', activeTokens.has(token));
-    console.log('🔍 Token expired:', isTokenExpired(token));
-    
-    if (activeTokens.has(token) && !isTokenExpired(token)) {
-      const userEmail = activeTokens.get(token);
-      socket.userEmail = userEmail;
-      console.log('✅ Socket authenticated via auth object for user:', userEmail);
-      socket.emit('authenticated', { success: true });
-    } else {
-      if (isTokenExpired(token)) {
-        console.log('❌ Socket authentication failed - token expired');
-        // Remove expired token
-        activeTokens.delete(token);
+    if (orderId) {
+      // Check if ticket exists
+      const ticketCheck = await sql.query`
+        SELECT TicketID FROM Tickets WHERE TicketID = ${ticketId}
+      `;
+      
+      if (ticketCheck.recordset.length === 0) {
+        // Create new ticket for the order
+        console.log('🔄 Creating ticket for order:', orderId);
+        const ticketResult = await sql.query`
+          INSERT INTO Tickets (Title, Description, CustomerID, Status, Priority, CreatedAt, OrderID, ShopID)
+          OUTPUT INSERTED.TicketID
+          VALUES (
+            ${`Hỗ trợ đơn hàng #${orderId}`}, 
+            ${`Chat hỗ trợ cho đơn hàng ${orderId}`}, 
+            ${parseInt(customerId)}, 
+            'Open', 
+            'Medium', 
+            GETDATE(), 
+            ${ticketId}, 
+            ${parseInt(shopId)}
+          )
+        `;
+        ticketId = ticketResult.recordset[0].TicketID;
+        console.log('✅ Ticket created:', ticketId);
       } else {
-        console.log('❌ Socket authentication failed - invalid token in auth object');
-        console.log('🔍 Available tokens:', Array.from(activeTokens.keys()));
+        console.log('✅ Using existing ticket:', ticketId);
       }
-      socket.emit('authenticated', { success: false, error: 'Invalid token' });
     }
-  }
-  
-  // Authentication middleware for authenticate event
-  socket.on('authenticate', (data: any) => {
-    const { token } = data;
-    if (token && activeTokens.has(token)) {
-      const userEmail = activeTokens.get(token);
-      socket.userEmail = userEmail;
-      console.log('✅ Socket authenticated via event for user:', userEmail);
-      socket.emit('authenticated', { success: true });
-    } else {
-      console.log('❌ Socket authentication failed - invalid token in event');
-      socket.emit('authenticated', { success: false, error: 'Invalid token' });
-    }
-  });
-  
-  // Join room
-  socket.on('room:join', (data: any) => {
-    const { roomId } = data;
-    if (roomId) {
-      socket.join(roomId);
-      console.log(`🚪 User ${socket.userEmail} joined room: ${roomId}`);
-      
-      // Nếu là Agent, cũng join agent room để nhận tin nhắn
-      if (socket.userEmail && (socket.userEmail.includes('agent') || socket.userEmail.includes('admin'))) {
-        const agentRoomId = `${roomId}_agent`;
-        socket.join(agentRoomId);
-        console.log(`🚪 Agent ${socket.userEmail} also joined agent room: ${agentRoomId}`);
-      }
-      
-      socket.emit('room:joined', { roomId });
-    }
-  });
-  
-  // Leave room
-  socket.on('room:leave', (data: any) => {
-    const { roomId } = data;
-    if (roomId) {
-      socket.leave(roomId);
-      console.log(`🚪 User ${socket.userEmail} left room: ${roomId}`);
-      socket.emit('room:left', { roomId });
-    }
-  });
-  
-  // Send message
-  socket.on('message:send', async (data: any) => {
-    const { content, senderId, senderName, senderRole, roomId, type = 'text' } = data;
+
+    // Create new conversation
+    await sql.query`
+      INSERT INTO ChatRooms (TicketID, RoomName, IsActive, CreatedAt, CustomerID, AgentID)
+      VALUES (${ticketId}, ${`Chat cho đơn hàng #${orderId || 'mới'}`}, 1, GETDATE(), ${parseInt(customerId)}, 2)
+    `;
+
+    // Get the created room ID
+    const newRoomResult = await sql.query`
+      SELECT TOP 1 RoomID FROM ChatRooms 
+      WHERE TicketID = ${ticketId} AND IsActive = 1
+      ORDER BY CreatedAt DESC
+    `;
+
+    const roomId = newRoomResult.recordset[0].RoomID;
     
-    console.log('📤 Message received:', { content, senderId, senderName, senderRole, roomId, type });
-    
-    if (!roomId || !content) {
-      socket.emit('error', { message: 'Missing roomId or content' });
-      return;
-    }
-    
-    try {
-      // 1. Save to SQL Server first
-      console.log('🔍 Attempting to get database connection...');
-      const pool = await getConnection();
-      console.log('✅ Database connection obtained');
-      
-      console.log('🔍 Executing SQL query with params:', {
-        roomId: parseInt(roomId),
-        senderId: parseInt(senderId) || 1,
-        content: content,
-        messageType: type,
+    console.log(`✅ New conversation created: ${roomId}`);
+    res.json({
+      success: true,
+      conversation: {
+        id: roomId.toString(),
+        customerId: customerId,
+        shopId: shopId,
+        orderId: orderId,
+        shopName: 'MUJI Shop',
+        customerName: 'Customer',
+        unreadCount: 0,
+        isActive: true,
         createdAt: new Date().toISOString()
-      });
-      
-      const result = await pool.request()
-        .input('roomId', parseInt(roomId))
-        .input('senderId', parseInt(senderId) || 1)
-        .input('content', content)
-        .input('messageType', type)
-        .input('createdAt', new Date().toISOString())
-        .query(`
-          INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt)
-          OUTPUT INSERTED.MessageID
-          VALUES (@roomId, @senderId, @content, @messageType, @createdAt)
-        `);
-      
-      console.log('✅ SQL query executed successfully');
-      console.log('🔍 Query result:', result);
-      
-      const messageId = result.recordset[0].MessageID;
-      console.log('💾 Message saved to SQL Server with ID:', messageId);
-      
-      // 2. Create message object for real-time
-      const message = {
-        id: messageId.toString(),
-        content,
-        senderId: senderId || 'unknown',
-        senderName: senderName || 'Unknown User',
-        senderRole: senderRole || 'Customer',
-        roomId,
-        timestamp: new Date().toISOString(),
-        type
-      };
-      
-      // 3. Store in memory for fast access
-      if (!messageStorage.has(roomId)) {
-        messageStorage.set(roomId, []);
       }
-      messageStorage.get(roomId)!.push(message);
-      
-      // 4. Cache message for ultra-fast access
-      await cache.cacheMessage(roomId, message.id, message);
-      
-      console.log('💾 Message stored in memory for room:', roomId, 'Total messages:', messageStorage.get(roomId)!.length);
-      
-      // 5. Publish to cache (Redis alternative)
-      await cache.publishMessage(roomId, message);
-      
-      // 6. Broadcast to room (for other customers)
-      socket.to(roomId).emit('message:receive', message);
-      
-      // 7. Also broadcast to agent room (roomId + '_agent')
-      const agentRoomId = `${roomId}_agent`;
-      socket.to(agentRoomId).emit('message:receive', message);
-      
-      // 8. Send confirmation back to sender
-      socket.emit('message:sent', message);
-      
-      console.log('✅ Message broadcasted to room:', roomId, 'and agent room:', agentRoomId);
-      
-    } catch (error: any) {
-      console.error('❌ Error saving message to database:', error);
-      console.error('❌ Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
-      
-      // Fallback: Save to memory only if database fails
-      console.log('🔄 Falling back to memory-only storage...');
-      
-      const message = {
-        id: `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        content,
-        senderId: senderId || 'unknown',
-        senderName: senderName || 'Unknown User',
-        senderRole: senderRole || 'Customer',
-        roomId,
-        timestamp: new Date().toISOString(),
-        type
-      };
-      
-      // Store in memory for fast access
-      if (!messageStorage.has(roomId)) {
-        messageStorage.set(roomId, []);
-      }
-      messageStorage.get(roomId)!.push(message);
-      
-      // Broadcast to room (for other customers)
-      socket.to(roomId).emit('message:receive', message);
-      
-      // Also broadcast to agent room (roomId + '_agent')
-      const agentRoomId = `${roomId}_agent`;
-      socket.to(agentRoomId).emit('message:receive', message);
-      
-      // Send confirmation back to sender
-      socket.emit('message:sent', message);
-      
-      console.log('✅ Message saved to memory only (database failed)');
-    }
+    });
 
-    // 🤖 AI BOT LOGIC - Chỉ phản hồi cho tin nhắn từ Customer
-    // Nếu Agent gửi tin nhắn, đánh dấu room này đã có Agent xử lý
-    if (senderRole === 'Agent' || senderRole === 'Admin') {
-      console.log(`👨‍💼 Agent ${senderName} is handling room ${roomId} - AI Bot will be disabled`);
-      // Có thể lưu trạng thái này vào cache hoặc database
-      await cache.set(`agent_handling_${roomId}`, true, 300); // 5 phút
-    }
-    
-    if (senderRole === 'Customer') {
-      try {
-        // Kiểm tra xem có nên sử dụng bot không
-        const roomMessages = messageStorage.get(roomId) || [];
-        const isFirstMessage = roomMessages.length === 1; // Tin nhắn đầu tiên
-        
-        // Kiểm tra Agent có đang online trong room không
-        const agentRoomId = `${roomId}_agent`;
-        const agentRoom = io.sockets.adapter.rooms.get(agentRoomId);
-        const agentOnline = agentRoom && agentRoom.size > 0;
-        
-        // Kiểm tra Agent có đang xử lý room này không (từ cache)
-        const agentHandling = await cache.get(`agent_handling_${roomId}`);
-        
-        // Kiểm tra tin nhắn gần nhất từ Agent (trong 5 phút qua)
-        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-        const recentAgentMessage = roomMessages
-          .filter(msg => (msg.senderRole === 'Agent' || msg.senderRole === 'Admin') && 
-                        new Date(msg.timestamp) > fiveMinutesAgo)
-          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-        
-        console.log('🤖 AI Bot Check:', {
-          roomId,
-          isFirstMessage,
-          agentOnline,
-          agentHandling,
-          recentAgentMessage: recentAgentMessage ? {
-            sender: recentAgentMessage.senderName,
-            time: recentAgentMessage.timestamp,
-            content: recentAgentMessage.content.substring(0, 50) + '...'
-          } : null
-        });
-        
-        // Chỉ sử dụng bot nếu:
-        // 1. Tin nhắn đầu tiên VÀ không có Agent đang xử lý HOẶC
-        // 2. Không có Agent online VÀ không có tin nhắn gần đây từ Agent VÀ không có Agent đang xử lý
-        const shouldUseBot = (isFirstMessage && !agentHandling) || 
-                            (!agentOnline && !recentAgentMessage && !agentHandling);
-        
-        console.log('🤖 AI Bot Decision:', {
-          shouldUseBot,
-          reason: shouldUseBot ? 
-            (isFirstMessage && !agentHandling ? 'First message, no agent handling' :
-             !agentOnline && !recentAgentMessage && !agentHandling ? 'No agent online/recent message/handling' : 'Unknown') :
-            (agentHandling ? 'Agent is handling' :
-             agentOnline ? 'Agent is online' :
-             recentAgentMessage ? 'Recent agent message' : 'Unknown')
-        });
-
-        if (shouldUseBot) {
-          console.log('🤖 AI Bot: Processing customer message for bot response');
-          
-          // Tạo context cho AI Bot
-          const context = {
-            shopName: 'MUJI Store',
-            customerName: senderName || 'bạn',
-            isFirstMessage,
-            productCategory: 'sản phẩm nội thất và đồ dùng gia đình',
-            roomId
-          };
-
-          // Gửi tin nhắn đến AI Bot
-          const botResponse = await AIBotService.sendMessage(content, context);
-          
-          // Tạo tin nhắn bot
-          const botMessage = AIBotService.createBotMessage(botResponse, roomId);
-          
-          // Lưu tin nhắn bot vào storage
-          messageStorage.get(roomId)!.push(botMessage);
-          
-          // Define agentRoomId for bot broadcasting
-          const agentRoomId = `${roomId}_agent`;
-          
-          // Broadcast tin nhắn bot đến room
-          socket.to(roomId).emit('message:receive', botMessage);
-          socket.to(agentRoomId).emit('message:receive', botMessage);
-          
-          // Gửi tin nhắn bot về cho người gửi
-          socket.emit('message:receive', botMessage);
-          
-          console.log('🤖 AI Bot: Response sent:', botResponse);
-        }
-      } catch (error) {
-        console.error('🤖 AI Bot: Error processing message:', error);
-      }
-    }
-  });
-  
-  // Typing indicators
-  socket.on('typing:start', async (data: any) => {
-    const { roomId } = data;
-    if (roomId) {
-      // Update cache
-      await cache.setTyping(roomId, socket.userEmail || 'Unknown User', true);
-      
-      socket.to(roomId).emit('typing:start', { 
-        roomId, 
-        user: socket.userEmail || 'Unknown User' 
-      });
-    }
-  });
-  
-  socket.on('typing:stop', async (data: any) => {
-    const { roomId } = data;
-    if (roomId) {
-      // Update cache
-      await cache.setTyping(roomId, socket.userEmail || 'Unknown User', false);
-      
-      socket.to(roomId).emit('typing:stop', { 
-        roomId, 
-        user: socket.userEmail || 'Unknown User' 
-      });
-    }
-  });
-  
-  // Request rooms
-  socket.on('rooms:request', async () => {
-    try {
-      // Mock rooms for now - in production, get from database
-      const rooms = [
-        {
-          id: '1',
-          name: 'MUJI Store - Clothing',
-          type: 'customer-shop',
-          participants: ['customer', 'shop'],
-          unreadCount: 0,
-          isActive: true
-        },
-        {
-          id: '2', 
-          name: 'MUJI Store - Beauty',
-          type: 'customer-shop',
-          participants: ['customer', 'shop'],
-          unreadCount: 1,
-          isActive: true
-        },
-        {
-          id: '3',
-          name: 'MUJI Store - Home', 
-          type: 'customer-shop',
-          participants: ['customer', 'shop'],
-          unreadCount: 0,
-          isActive: true
-        }
-      ];
-      
-      socket.emit('rooms:list', rooms);
-      console.log('📋 Sent rooms list to user:', socket.userEmail);
-    } catch (error) {
-      console.error('❌ Error getting rooms:', error);
-      socket.emit('error', { message: 'Failed to get rooms' });
-    }
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
+  } catch (error) {
+    console.error('❌ Error opening conversation:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to open conversation',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
 });
 
-// Start server
-const port = 4000;
-
-async function startServer() {
+// Get conversations for agent
+app.get('/api/conversations/agent', async (req, res) => {
   try {
-    console.log('🚀 Starting optimized development server...');
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const sql = await getDbConnection();
     
-    // Connect to database
-    await connectDatabase();
-    
-    // Try to connect to Docker Redis
-    try {
-      await redisService.connect();
-      console.log('✅ Docker Redis connected successfully');
-    } catch (error: any) {
-      console.log('⚠️ Docker Redis connection failed, using in-memory cache:', error.message);
-      console.log('📊 Cache stats:', cache.getStats());
+    // Get user info
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Invalid token' });
     }
     
-    // Start HTTP server
-    server.listen(port, () => {
-      console.log(`✅ Server running on port ${port}`);
-      console.log(`🔌 Socket.IO available at ws://localhost:${port}/ws`);
-      console.log(`📡 Health check: http://localhost:${port}/health`);
-      console.log(`⚡ Optimized for development - minimal middleware loaded`);
+    const userResult = await sql.query`
+      SELECT UserID, Email FROM Users WHERE Email = ${userEmail}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    const userEmail_check = userResult.recordset[0].Email;
+    
+    // Check if user is agent or admin
+    if (userEmail_check !== 'agent@muji.com' && userEmail_check !== 'admin@muji.com') {
+      return res.status(403).json({ error: 'Access denied. Agent role required.' });
+    }
+    
+    // Get all active conversations for agent
+    const conversationsResult = await sql.query`
+      SELECT 
+        cr.RoomID,
+        cr.RoomName,
+        cr.CustomerName,
+        cr.CustomerEmail,
+        cr.LastMessage,
+        cr.LastMessageAt,
+        cr.CreatedAt,
+        cr.IsActive,
+        t.OrderID,
+        t.ShopID,
+        COUNT(CASE WHEN m.IsRead = 0 AND m.SenderID != ${userId} THEN 1 END) as UnreadCount
+      FROM ChatRooms cr
+      LEFT JOIN Tickets t ON cr.TicketID = t.TicketID
+      LEFT JOIN Messages m ON cr.RoomID = m.RoomID
+      WHERE cr.IsActive = 1
+      GROUP BY cr.RoomID, cr.RoomName, cr.CustomerName, cr.CustomerEmail, 
+               cr.LastMessage, cr.LastMessageAt, cr.CreatedAt, cr.IsActive, 
+               t.OrderID, t.ShopID
+      ORDER BY cr.LastMessageAt DESC, cr.CreatedAt DESC
+    `;
+    
+    const conversations = conversationsResult.recordset.map((conv: any) => ({
+      id: conv.RoomID.toString(),
+      customerId: conv.CustomerEmail || 'unknown',
+      shopId: conv.ShopID?.toString() || '1',
+      orderId: conv.OrderID?.toString(),
+      shopName: 'MUJI Shop',
+      customerName: conv.CustomerName || 'Khách hàng',
+      lastMessage: conv.LastMessage,
+      lastMessageAt: conv.LastMessageAt?.toISOString(),
+      unreadCount: conv.UnreadCount || 0,
+      isActive: conv.IsActive,
+      createdAt: conv.CreatedAt.toISOString()
+    }));
+    
+    // console.log(`✅ Agent conversations loaded: ${conversations.length}`);
+    res.json({ conversations });
+    
+  } catch (error) {
+    console.error('❌ Error getting agent conversations:', error);
+    res.status(500).json({ 
+      error: 'Failed to get conversations',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Get conversations for customer
+app.get('/api/conversations/customer', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    console.log('🔄 Getting customer conversations for:', userEmail);
+
+    const sql = await getDbConnection();
+    
+    // Get user ID
+    const userResult = await sql.query`
+      SELECT UserID FROM Users WHERE Email = ${userEmail}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    console.log('🔍 User ID from database:', userId);
+    
+    // Get conversations
+    const conversationsResult = await sql.query`
+      SELECT 
+        RoomID,
+        TicketID,
+        RoomName,
+        IsActive,
+        CreatedAt,
+        CustomerID,
+        AgentID,
+        LastMessage,
+        LastMessageAt,
+        CustomerName
+      FROM ChatRooms 
+      WHERE CustomerID = ${parseInt(userId)} AND IsActive = 1
+      ORDER BY LastMessageAt DESC, CreatedAt DESC
+    `;
+    
+    console.log('🔍 Conversations found:', conversationsResult.recordset.length);
+    console.log('🔍 Raw conversations data:', conversationsResult.recordset);
+
+    const conversations = conversationsResult.recordset.map((conv: any) => ({
+      id: conv.RoomID.toString(),
+      customerId: conv.CustomerID?.toString() || userId.toString(),
+      shopId: conv.AgentID?.toString() || '1',
+      orderId: conv.TicketID?.toString(),
+      shopName: 'MUJI Shop',
+      customerName: conv.CustomerName || 'Customer',
+      lastMessage: conv.LastMessage,
+      lastMessageAt: conv.LastMessageAt ? conv.LastMessageAt.toISOString() : null,
+      unreadCount: 0, // Will be calculated separately if needed
+      isActive: conv.IsActive,
+      createdAt: conv.CreatedAt ? conv.CreatedAt.toISOString() : new Date().toISOString(),
+      agentId: conv.AgentID?.toString(),
+      agentName: 'MUJI Shop Agent'
+    }));
+
+    // console.log(`✅ Customer conversations loaded: ${conversations.length}`);
+    res.json({ 
+      success: true, 
+      conversations: conversations 
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting customer conversations:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get customer conversations',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Get conversation details
+app.get('/api/conversations/:id', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    console.log('🔄 Getting conversation details:', id);
+
+    const sql = await getDbConnection();
+    
+    // Get conversation details
+    const conversationResult = await sql.query`
+      SELECT 
+        RoomID,
+        TicketID,
+        RoomName,
+        IsActive,
+        CreatedAt,
+        CustomerID,
+        AgentID,
+        LastMessage,
+        LastMessageAt,
+        CustomerName,
+        CustomerEmail
+      FROM ChatRooms 
+      WHERE RoomID = ${parseInt(id)}
+    `;
+
+    if (conversationResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const conversation = conversationResult.recordset[0];
+    
+    // Get unread message count
+    const unreadResult = await sql.query`
+      SELECT COUNT(*) as unreadCount
+      FROM Messages 
+      WHERE RoomID = ${parseInt(id)} AND SenderID != ${conversation.CustomerID} AND IsRead = 0
+    `;
+    
+    const unreadCount = unreadResult.recordset[0]?.unreadCount || 0;
+
+    const conversationData = {
+      id: conversation.RoomID.toString(),
+      customerId: conversation.CustomerID?.toString() || '3',
+      shopId: conversation.AgentID?.toString() || '1',
+      orderId: conversation.TicketID?.toString(),
+      shopName: 'MUJI Shop',
+      customerName: conversation.CustomerName || 'Customer',
+      lastMessage: conversation.LastMessage,
+      lastMessageAt: conversation.LastMessageAt ? conversation.LastMessageAt.toISOString() : null,
+      unreadCount: unreadCount,
+      isActive: conversation.IsActive,
+      createdAt: conversation.CreatedAt ? conversation.CreatedAt.toISOString() : new Date().toISOString(),
+      agentId: conversation.AgentID?.toString(),
+      agentName: 'MUJI Shop Agent'
+    };
+
+    // console.log(`✅ Conversation details loaded: ${conversation.RoomName}`);
+    res.json({ 
+      success: true, 
+      conversation: conversationData 
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting conversation details:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get conversation details',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Test API to check database
+app.get('/api/test/conversations', async (req, res) => {
+  try {
+    const sql = await getDbConnection();
+    
+    // Get all conversations
+    const allConversationsResult = await sql.query`
+      SELECT 
+        RoomID,
+        CustomerID,
+        IsActive,
+        RoomName
+      FROM ChatRooms 
+      ORDER BY RoomID DESC
+    `;
+    
+    console.log('🔍 All conversations in database:', allConversationsResult.recordset);
+    
+    res.json({
+      success: true,
+      conversations: allConversationsResult.recordset
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
+    console.error('❌ Error in test API:', error);
+    res.status(500).json({ error: 'Test failed' });
   }
-}
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🛑 SIGTERM received, shutting down gracefully');
-  // redisService.disconnect(); // Redis disabled
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
 });
 
-process.on('SIGINT', () => {
-  console.log('🛑 SIGINT received, shutting down gracefully');
-  // redisService.disconnect(); // Redis disabled
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
+// Get messages for conversation
+app.get('/api/conversations/:id/messages', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    const { limit = 50, offset = 0 } = req.query;
+    
+    // console.log('🔄 Getting messages for conversation:', id, { limit, offset });
+
+    const sql = await getDbConnection();
+    
+    // Get messages with proper SQL Server syntax
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    
+    const messagesResult = await sql.query`
+      SELECT 
+        MessageID,
+        RoomID,
+        SenderID,
+        Content,
+        MessageType,
+        CreatedAt,
+        IsRead
+      FROM Messages 
+      WHERE RoomID = ${parseInt(id)}
+      ORDER BY MessageID DESC
+      OFFSET ${offsetNum} ROWS
+      FETCH NEXT ${limitNum} ROWS ONLY
+    `;
+
+    const messages = messagesResult.recordset.map((msg: any) => ({
+      id: msg.MessageID.toString(),
+      conversationId: msg.RoomID.toString(),
+      senderId: msg.SenderID.toString(),
+      content: msg.Content,
+      type: msg.MessageType || 'text',
+      createdAt: msg.CreatedAt ? msg.CreatedAt.toISOString() : new Date().toISOString(),
+      isRead: msg.IsRead || false
+    }));
+
+    // console.log(`✅ Messages loaded: ${messages.length}`);
+    res.json({ 
+      success: true, 
+      messages: messages.reverse() // Reverse to get chronological order
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting messages:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get messages',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
 });
 
-// Start the server
-startServer();
+// Mark conversation as read
+app.post('/api/conversations/:id/read', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    console.log('🔄 Marking conversation as read:', id);
+
+    const sql = await getDbConnection();
+    
+    // Mark messages as read
+    await sql.query`
+      UPDATE Messages 
+      SET IsRead = 1 
+      WHERE RoomID = ${parseInt(id)} AND IsRead = 0
+    `;
+
+    console.log(`✅ Conversation marked as read: ${id}`);
+    res.json({ 
+      success: true, 
+      message: 'Conversation marked as read'
+    });
+
+  } catch (error) {
+    console.error('❌ Error marking conversation as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to mark conversation as read',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Sync messages since timestamp
+app.get('/api/messages/sync', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { conversationId, since } = req.query;
+    
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    
+    console.log('🔄 Syncing messages for conversation:', conversationId, 'since:', since);
+
+    const sql = await getDbConnection();
+    
+    let query = `
+      SELECT 
+        MessageID,
+        RoomID,
+        SenderID,
+        Content,
+        MessageType,
+        CreatedAt,
+        IsRead
+      FROM Messages 
+      WHERE RoomID = ${parseInt(conversationId as string)}
+    `;
+    
+    if (since) {
+      query += ` AND CreatedAt > '${since}'`;
+    }
+    
+    query += ` ORDER BY CreatedAt ASC`;
+
+    const messagesResult = await sql.query(query);
+
+    const messages = messagesResult.recordset.map((msg: any) => ({
+      id: msg.MessageID.toString(),
+      conversationId: msg.RoomID.toString(),
+      senderId: msg.SenderID.toString(),
+      content: msg.Content,
+      type: msg.MessageType || 'text',
+      createdAt: msg.CreatedAt ? msg.CreatedAt.toISOString() : new Date().toISOString(),
+      isRead: msg.IsRead || false
+    }));
+
+    console.log(`✅ Messages synced: ${messages.length}`);
+    res.json({ 
+      success: true, 
+      messages: messages
+    });
+
+  } catch (error) {
+    console.error('❌ Error syncing messages:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to sync messages',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Send message to conversation
+app.post('/api/conversations/:id/messages', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    const { content, clientTempId } = req.body;
+    
+    if (!content) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+    
+    // console.log('🔄 Sending message to conversation:', id, 'content:', content);
+
+    const sql = await getDbConnection();
+    
+    // Get user info
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    const userResult = await sql.query`
+      SELECT UserID FROM Users WHERE Email = ${userEmail}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    
+    // Insert message
+    const messageResult = await sql.query`
+      INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt, IsRead)
+      VALUES (${parseInt(id)}, ${userId}, ${content}, 'text', GETDATE(), 0);
+      SELECT SCOPE_IDENTITY() as MessageID;
+    `;
+    
+    const messageId = messageResult.recordset[0].MessageID;
+    
+    // Update last message in conversation
+    await sql.query`
+      UPDATE ChatRooms 
+      SET LastMessage = ${content}, LastMessageAt = GETDATE()
+      WHERE RoomID = ${parseInt(id)}
+    `;
+
+    const message = {
+      id: messageId.toString(),
+      conversationId: id,
+      senderId: userId.toString(),
+      content: content,
+      type: 'text',
+      createdAt: new Date().toISOString(),
+      isRead: false,
+      clientTempId: clientTempId
+    };
+
+    console.log(`✅ Message sent: ${messageId}`);
+    
+    // Broadcast message to socket clients (for real-time updates)
+    if (io) {
+      const socketMessage = {
+        id: messageId.toString(),
+        roomId: id,
+        senderId: userId.toString(),
+        content: content,
+        type: 'text',
+        createdAt: new Date().toISOString(),
+        sender: {
+          id: userId.toString(),
+          name: userResult.recordset[0].FullName || 'Unknown',
+          role: userResult.recordset[0].Email === 'admin@muji.com' ? 'Admin' : 
+                userResult.recordset[0].Email === 'agent@muji.com' ? 'Agent' : 'Customer'
+        }
+      };
+      
+      // Broadcast to all users in room
+      io.to(id).emit('receive_message', socketMessage);
+      
+      // Also broadcast to agent room (roomId + '_agent') for agent notifications
+      const agentRoomId = `${id}_agent`;
+      io.to(agentRoomId).emit('receive_message', socketMessage);
+      
+      // Broadcast to all agents globally (for agent dashboard)
+      io.to('agents').emit('receive_message', socketMessage);
+      
+      console.log(`📢 Message broadcasted to socket clients in room ${id}, agent room ${agentRoomId}, and global agents`);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: message
+    });
+
+  } catch (error) {
+    console.error('❌ Error sending message:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to send message',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+server.listen(port, async () => {
+  // Initialize database connection
+  try {
+    await initDatabaseConnection();
+    console.log('✅ Database connection initialized');
+    
+    // Set global database connection for Socket.IO
+    setGlobalDbConnection(globalConnection);
+    console.log('✅ Socket.IO database connection set');
+  } catch (error) {
+    console.error('❌ Failed to initialize database connection:', error);
+  }
+  
+  console.log(`✅ Server running on port ${port}`);
+  console.log(`🔌 Socket.IO available at ws://localhost:${port}`);
+  console.log(`📡 Health check: http://localhost:${port}/health`);
+  console.log(`⚡ Simple Chat Gateway initialized`);
+});

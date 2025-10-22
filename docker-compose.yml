@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: muji-postgres
+    environment:
+      POSTGRES_DB: live_support
+      POSTGRES_USER: muji_user
+      POSTGRES_PASSWORD: muji_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./BackEnd/database/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - muji-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: muji-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - muji-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./BackEnd
+      dockerfile: Dockerfile
+    container_name: muji-backend
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: live_support
+      DB_USER: muji_user
+      DB_PASSWORD: muji_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - muji-network
+    volumes:
+      - ./BackEnd:/app
+      - /app/node_modules
+
+  # Frontend
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: Dockerfile
+    container_name: muji-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:4000
+    depends_on:
+      - backend
+    networks:
+      - muji-network
+    volumes:
+      - ./FrontEnd:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  muji-network:
+    driver: bridge

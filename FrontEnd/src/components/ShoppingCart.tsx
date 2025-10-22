@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import AuthChatService from '../services/AuthChatService';
-import { getApiUrl, API_CONFIG } from '../config/api';
+import { getApiUrl } from '../config/api';
 
 interface CartItem {
   CartID: number;
@@ -57,7 +57,12 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
     try {
       setLoading(true);
       console.log('🛒 ShoppingCart: Loading cart items...');
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
+      
+      console.log('🛒 ShoppingCart - loadCartItems - Token:', token);
+      console.log('🛒 ShoppingCart - loadCartItems - Token type:', typeof token);
+      console.log('🛒 ShoppingCart - loadCartItems - Token length:', token?.length);
+      console.log('🛒 ShoppingCart - loadCartItems - API URL:', getApiUrl('/api/cart'));
       
       if (!token) {
         console.log('🛒 ShoppingCart: No token, clearing cart');
@@ -66,31 +71,38 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
       }
 
       const response = await fetch(getApiUrl('/api/cart'), {
+        method: 'GET', // Change back to GET
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       });
       
+      console.log('🛒 ShoppingCart - loadCartItems - Response status:', response.status);
+      
       if (!response.ok) {
+        const errorText = await response.text();
+        console.log('🛒 ShoppingCart - loadCartItems - Error response:', errorText);
         throw new Error('Failed to fetch cart');
       }
       
       const data = await response.json();
       console.log('🛒 ShoppingCart: API response:', data);
       
-      if (data.success && Array.isArray(data.cartItems)) {
-        setCartItems(data.cartItems);
-        console.log('🛒 ShoppingCart: Loaded', data.cartItems.length, 'items');
+      if (data.success && Array.isArray(data.items)) {
+        setCartItems(data.items);
+        console.log('🛒 ShoppingCart: Loaded', data.items.length, 'items');
       } else {
         setCartItems([]);
         console.log('🛒 ShoppingCart: No items or invalid response');
+        console.log('🛒 ShoppingCart: Expected data.items but got:', Object.keys(data));
       }
       
     } catch (error) {
       console.error('🛒 ShoppingCart: Error loading cart:', error);
-      // Fallback to mock data
-      const { mockCartItems } = await import('../data/mockData');
-      setCartItems(mockCartItems);
+      // Don't fallback to mock data - show empty cart
+      setCartItems([]);
+      console.log('🛒 ShoppingCart: Cart is empty due to error');
     } finally {
       setLoading(false);
     }
@@ -118,17 +130,27 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
 
   const removeItem = async (cartId: number) => {
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         alert('Vui lòng đăng nhập để xóa sản phẩm');
         return;
       }
 
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
       const response = await fetch(getApiUrl(`/api/cart/${cartId}`), {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ userInfo })
       });
 
       if (!response.ok) {
@@ -155,7 +177,7 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
 
   const clearCart = async () => {
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         alert('Vui lòng đăng nhập để xóa giỏ hàng');
         return;
@@ -317,7 +339,7 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
                       }}
                       onError={(e) => {
                         e.currentTarget.style.display = 'none';
-                        e.currentTarget.nextElementSibling.style.display = 'flex';
+                        (e.currentTarget.nextElementSibling as HTMLElement).style.display = 'flex';
                       }}
                     />
                   ) : null}

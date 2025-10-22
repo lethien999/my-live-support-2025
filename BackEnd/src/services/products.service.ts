@@ -185,7 +185,7 @@ export class ProductService {
       data.productId,
       data.customerId,
       data.rating,
-      data.comment
+      data.comment || ''
     );
 
     logger.info('Review created', { reviewId: review.ReviewID, productId: data.productId });
@@ -199,6 +199,10 @@ export class ProductService {
 
   static async searchProducts(query: string, limit: number = 20, offset: number = 0) {
     const searchQuery = `
+      DECLARE @searchTerm NVARCHAR(255) = @p1;
+      DECLARE @offset INT = @p2;
+      DECLARE @limit INT = @p3;
+      
       SELECT p.*, c.CategoryName
       FROM Products p
       INNER JOIN Categories c ON p.CategoryID = c.CategoryID

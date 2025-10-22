@@ -27,7 +27,7 @@ Bạn muốn biết thông tin gì về sản phẩm của chúng tôi? 💬`
   }
 
   // Phản hồi cho câu hỏi về sản phẩm
-  static getProductResponse(question: string, productCategory: string): string {
+  static getProductResponse(_question: string, productCategory: string): string {
     const responses = [
       `Tôi hiểu bạn quan tâm đến ${productCategory}. Nhân viên của chúng tôi sẽ cung cấp thông tin chi tiết về sản phẩm sớm nhất có thể.
 

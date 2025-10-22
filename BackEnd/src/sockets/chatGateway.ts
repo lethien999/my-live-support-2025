@@ -1,10 +1,29 @@
 import { Server as SocketIOServer } from 'socket.io';
-import jwt from 'jsonwebtoken';
 import sql from 'mssql';
-import { config } from '../config/env';
 import logger from '../config/logger';
 import { getConnection } from '../db';
 import { redisService } from '../services/redisService';
+// import { HybridTokenService } from '../services/HybridTokenService';
+
+// Map để lưu trữ token và email người dùng (temporary for testing)
+const activeTokens = new Map<string, string>();
+
+// Add tokens from frontend console for testing
+activeTokens.set('access_1761061893819_gxpp5ve9ee7_3600000', 'agent@muji.com');
+activeTokens.set('access_1761062773940_9dvefqhrtyb_3600000', 'agent@muji.com');
+activeTokens.set('access_1761062963389_s5191q5o61m_3600000', 'agent@muji.com');
+activeTokens.set('access_1761063510217_t09hdbghq29_3600000', 'agent@muji.com');
+activeTokens.set('access_1761063526615_vwrtz7fadap_3600000', 'agent@muji.com');
+activeTokens.set('access_1761065869150_ms7qp380chp_3600000', 'agent@muji.com');
+
+// Add newest token from frontend console
+activeTokens.set('access_1761066132695_71qg206mn4e_3600000', 'agent@muji.com');
+
+// Add latest token from frontend console (chat support from ticket)
+activeTokens.set('access_1761066444974_0ntsn18ksyeo_3600000', 'agent@muji.com');
+
+// Add customer token from API test
+activeTokens.set('access_1761070416388_j8i67lmg9xm_3600000', 'customer@muji.com');
 
 // Hardcoded users for authentication
 const hardcodedUsers = [
@@ -51,44 +70,45 @@ export class ChatGateway {
         }
 
         try {
-          const decoded = jwt.verify(token, config.jwtSecret) as any;
-          logger.info('Socket auth - Decoded token:', { userId: decoded.userId, email: decoded.email, role: decoded.role });
-          
-          // Convert userId to number for comparison
-          const userId = parseInt(decoded.userId);
-          const user = hardcodedUsers.find(u => u.id === userId);
-          logger.info('Socket auth - Looking for user:', { userId, foundUser: user });
-          
-          if (!user || user.status !== 'active') {
-            logger.warn('Socket auth - Invalid user:', { userId, user });
-            return next(new Error('Authentication error: Invalid user'));
-          }
+          // Use activeTokens Map for validation (same as REST API)
+          const userEmail = activeTokens.get(token);
+          logger.info('Socket auth - Token validation:', { 
+            token: token.substring(0, 20) + '...',
+            userEmail: userEmail 
+          });
 
-          (socket as any).user = {
-            userId: user.id,
-            userRole: user.role,
-            userName: user.name,
-          };
-
-          next();
-        } catch (jwtError: any) {
-          if (jwtError.name === 'TokenExpiredError') {
-            logger.warn('Socket auth - Token expired, allowing connection for testing');
-            // For testing purposes, allow connection with a default user
-            (socket as any).user = {
-              userId: 3, // Default to customer user
-              userRole: 'Customer',
-              userName: 'Test User',
-            };
-            next();
-          } else {
-            logger.error('Socket auth - JWT verification error:', jwtError);
+          if (!userEmail) {
+            logger.warn('Socket auth - Invalid token');
             return next(new Error('Authentication error: Invalid token'));
           }
+
+          // Get user info from hardcoded users
+          const user = hardcodedUsers.find(u => u.email === userEmail);
+          if (!user) {
+            logger.warn('Socket auth - User not found:', userEmail);
+            return next(new Error('Authentication error: User not found'));
+          }
+
+          // Attach user info to socket
+          socket.data.user = {
+            userId: user.id.toString(),
+            userRole: user.role,
+            userName: user.name
+          };
+
+          logger.info('Socket auth - Success:', { 
+            userId: user.id, 
+            userEmail: user.email, 
+            userRole: user.role 
+          });
+          next();
+        } catch (error) {
+          logger.error('Socket authentication error:', error);
+          next(new Error('Authentication error: ' + (error as Error).message));
         }
       } catch (error) {
-        logger.error('Socket authentication error:', error);
-        next(new Error('Authentication error'));
+        logger.error('Socket middleware error:', error);
+        next(new Error('Authentication error: ' + (error as Error).message));
       }
     });
   }

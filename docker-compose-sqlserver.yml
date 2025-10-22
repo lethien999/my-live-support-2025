@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Redis Cache (Docker)
+  redis:
+    image: redis:7-alpine
+    container_name: muji-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - muji-network
+
+  # Backend API (Docker)
+  backend:
+    build:
+      context: ./BackEnd
+      dockerfile: Dockerfile
+    container_name: muji-backend
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      # Keep SQL Server connection
+      DB_HOST: host.docker.internal
+      DB_PORT: 1433
+      DB_NAME: live_support
+      DB_USER: thien
+      DB_PASSWORD: 1909
+      # Use Docker Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - muji-network
+    volumes:
+      - ./BackEnd:/app
+      - /app/node_modules
+
+volumes:
+  redis_data:
+
+networks:
+  muji-network:
+    driver: bridge

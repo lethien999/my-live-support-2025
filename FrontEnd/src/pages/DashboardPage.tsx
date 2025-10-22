@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import AuthChatService from '../services/AuthChatService';
-import { getApiUrl } from '../config/api';
+// import { getApiUrl } from '../config/api';
 
 const DashboardPage: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -9,23 +9,52 @@ const DashboardPage: React.FC = () => {
 
   useEffect(() => {
     AuthChatService.init();
-    const currentUser = AuthChatService.getCurrentUser();
-    if (currentUser) {
-      setUser(currentUser);
-      loadStats(currentUser);
-    } else {
-      // Redirect to login if not authenticated
-      window.history.pushState({}, '', '/login');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
+    
+    // Check authentication with delay to allow token loading
+    const checkAuth = async () => {
+      const currentUser = AuthChatService.getCurrentUser();
+      console.log('🔍 Dashboard - checkAuth - currentUser:', currentUser);
+      
+      if (currentUser) {
+        setUser(currentUser);
+        loadStats(currentUser);
+      } else {
+        // Wait a bit more for token to load
+        setTimeout(async () => {
+          const retryUser = AuthChatService.getCurrentUser();
+          console.log('🔍 Dashboard - retry check - currentUser:', retryUser);
+          
+          if (retryUser) {
+            setUser(retryUser);
+            loadStats(retryUser);
+          } else {
+            console.log('❌ Dashboard - No user found, redirecting to login');
+            // Redirect to login if not authenticated
+            window.history.pushState({}, '', '/login');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }
+        }, 1000);
+      }
+    };
+    
+    checkAuth();
   }, []);
 
   const loadStats = async (user: any) => {
     try {
       // Load real stats from API based on user role
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
+      console.log('🔍 Dashboard - loadStats - token:', token);
+      
       if (!token) {
-        setStats({});
+        console.log('❌ Dashboard - No token available, showing empty stats');
+        setStats({
+          Customer: {
+            totalOrders: 0,
+            totalSpent: 0,
+            favoriteCategories: []
+          }
+        });
         setLoading(false);
         return;
       }
@@ -59,7 +88,7 @@ const DashboardPage: React.FC = () => {
         }
       };
 
-      setStats(stats[user.role] || stats.Customer);
+      setStats(stats[user.role as keyof typeof stats] || stats.Customer);
       setLoading(false);
     } catch (error) {
       console.error('Error loading stats:', error);

@@ -14,29 +14,45 @@ const Header: React.FC<HeaderProps> = ({ onCartClick }) => {
 
   useEffect(() => {
     AuthChatService.init();
-    const currentUser = AuthChatService.getCurrentUser();
-    if (currentUser) {
-      setIsAuthenticated(true);
-      setUser(currentUser);
-    } else {
-      setIsAuthenticated(false);
-      setUser(null);
-    }
     
-    // Listen for authentication changes
-    const handleAuthChange = () => {
-      const user = AuthChatService.getCurrentUser();
-      if (user) {
-        setIsAuthenticated(true);
-        setUser(user);
+    // Check authentication status
+    const checkAuth = () => {
+      const currentUser = AuthChatService.getCurrentUser();
+      if (currentUser) {
+        if (!isAuthenticated) {
+          console.log('✅ Header - User authenticated:', currentUser);
+          setIsAuthenticated(true);
+          setUser(currentUser);
+        }
       } else {
-        setIsAuthenticated(false);
-        setUser(null);
+        if (isAuthenticated) {
+          console.log('❌ Header - User logged out');
+          setIsAuthenticated(false);
+          setUser(null);
+        }
       }
     };
     
-    // Add event listener for auth changes
+    // Initial check
+    checkAuth();
+    
+    // Listen for authentication changes
+    const handleAuthChange = () => {
+      console.log('🔍 Header - authChange event received');
+      checkAuth();
+    };
+    
+    // Listen for Google OAuth success
+    const handleGoogleAuthSuccess = () => {
+      console.log('🔍 Header - Google OAuth success event received');
+      // Force reload user from storage
+      AuthChatService.init();
+      checkAuth();
+    };
+    
+    // Add event listeners
     window.addEventListener('authChange', handleAuthChange);
+    window.addEventListener('googleAuthSuccess', handleGoogleAuthSuccess);
     
     // Add event listener for cart updates
     const handleCartUpdate = () => {
@@ -44,32 +60,49 @@ const Header: React.FC<HeaderProps> = ({ onCartClick }) => {
     };
     window.addEventListener('cartUpdated', handleCartUpdate);
     
+    // Periodic check disabled - only check on events
+    // const authCheckInterval = setInterval(() => {
+    //   checkAuth();
+    // }, 2000);
+    
     // Load initial cart count
     loadCartCount();
     
     return () => {
       window.removeEventListener('authChange', handleAuthChange);
+      window.removeEventListener('googleAuthSuccess', handleGoogleAuthSuccess);
       window.removeEventListener('cartUpdated', handleCartUpdate);
+      // clearInterval(authCheckInterval);
     };
   }, []);
 
   const loadCartCount = async () => {
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         setCartItemCount(0);
         return;
       }
       
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
       const response = await fetch(getApiUrl('/api/cart'), {
+        method: 'GET', // Change to GET
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       });
       if (response.ok) {
         const data = await response.json();
-        if (data.success && Array.isArray(data.cartItems)) {
-          const totalItems = data.cartItems.length; // Đếm số items thay vì tổng quantity
+        if (data.success && Array.isArray(data.items)) {
+          const totalItems = data.items.length; // Đếm số items thay vì tổng quantity
           setCartItemCount(totalItems);
         } else {
           setCartItemCount(0);
@@ -160,6 +193,31 @@ const Header: React.FC<HeaderProps> = ({ onCartClick }) => {
             >
               Sản phẩm
             </button>
+
+            {user?.role === 'Agent' && (
+              <button
+                onClick={() => navigateTo('/agent-dashboard')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '16px',
+                  fontWeight: '400',
+                  color: '#333',
+                  cursor: 'pointer',
+                  padding: '10px 0',
+                  borderBottom: '2px solid transparent',
+                  transition: 'all 0.3s ease'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.borderBottomColor = '#000';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.borderBottomColor = 'transparent';
+                }}
+              >
+                👨‍💼 Agent Dashboard
+              </button>
+            )}
 
             <button
               onClick={() => navigateTo('/chat')}
@@ -294,6 +352,34 @@ const Header: React.FC<HeaderProps> = ({ onCartClick }) => {
                       >
                         📊 Dashboard
                       </button>
+                      
+                      {user?.email === 'admin@muji.com' && (
+                        <button
+                          onClick={() => {
+                            navigateTo('/admin');
+                            setShowUserMenu(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '10px 20px',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#333',
+                            transition: 'background-color 0.3s ease'
+                          }}
+                          onMouseOver={(e) => {
+                            e.currentTarget.style.backgroundColor = '#f0f0f0';
+                          }}
+                          onMouseOut={(e) => {
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                          }}
+                        >
+                          ⚙️ Admin Panel
+                        </button>
+                      )}
                       
                       {user?.role === 'Agent' && (
                         <button

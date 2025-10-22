@@ -178,7 +178,7 @@ class GlobalChatManager {
     this.saveUserChatHistory(senderId, senderHistory);
     
     // Add to all other users' histories (mark as received)
-    this.connectedUsers.forEach((user, userId) => {
+    this.connectedUsers.forEach((_user, userId) => {
       if (userId !== senderId) {
         const userHistory = this.userChatHistory.get(userId) || [];
         const receivedMessage = { ...message, isUser: false };
@@ -261,7 +261,7 @@ class GlobalChatManager {
 
   // Get all users with chat history
   getAllUsersWithHistory(): { userId: string, userName: string, userRole: string, messageCount: number }[] {
-    const users = [];
+    const users: any[] = [];
     this.userChatHistory.forEach((messages, userId) => {
       const user = this.connectedUsers.get(userId);
       if (user) {

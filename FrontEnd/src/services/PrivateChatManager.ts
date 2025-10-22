@@ -3,7 +3,7 @@ class PrivateChatManager {
   private static instance: PrivateChatManager;
   private messageHandlers: Map<string, (message: any) => void> = new Map();
   private connectedUsers: Map<string, any> = new Map();
-  private activeChats: Map<string, { customerId: string, agentId: string, messages: any[] }> = new Map();
+  private activeChats: Map<string, { customerId: string, agentId: string | null, messages: any[], status: string }> = new Map();
   private storageKey = 'live_support_private_chats';
   private chatStoragePrefix = 'private_chat_';
 
@@ -214,7 +214,7 @@ class PrivateChatManager {
       chat.status = 'active';
       
       const chatId = Array.from(this.activeChats.entries())
-        .find(([id, c]) => c.customerId === customerId)?.[0];
+        .find(([_id, c]) => c.customerId === customerId)?.[0];
       
       if (chatId) {
         this.activeChats.set(chatId, chat);
@@ -263,7 +263,7 @@ class PrivateChatManager {
     
     // Find chat ID
     const chatId = Array.from(this.activeChats.entries())
-      .find(([id, c]) => c.customerId === chat.customerId)?.[0];
+      .find(([_id, c]) => c.customerId === chat.customerId)?.[0];
     
     if (chatId) {
       this.activeChats.set(chatId, chat);
@@ -350,7 +350,7 @@ class PrivateChatManager {
             chat.status = 'waiting';
             
             const chatId = Array.from(this.activeChats.entries())
-              .find(([id, c]) => c.customerId === chat.customerId)?.[0];
+              .find(([_id, c]) => c.customerId === chat.customerId)?.[0];
             
             if (chatId) {
               this.activeChats.set(chatId, chat);
@@ -375,7 +375,7 @@ class PrivateChatManager {
       chat.status = 'closed';
       
       const chatId = Array.from(this.activeChats.entries())
-        .find(([id, c]) => c.customerId === customerId)?.[0];
+        .find(([_id, c]) => c.customerId === customerId)?.[0];
       
       if (chatId) {
         this.activeChats.set(chatId, chat);

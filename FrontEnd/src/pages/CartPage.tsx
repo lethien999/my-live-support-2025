@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import AuthChatService from '../services/AuthChatService';
-import { getApiUrl, API_CONFIG } from '../config/api';
+import { getApiUrl } from '../config/api';
 
 interface CartItem {
   CartID: number;
@@ -38,18 +38,27 @@ const CartPage: React.FC = () => {
   const loadCartItems = async () => {
     try {
       setLoading(true);
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       
       if (!token) {
         throw new Error('Vui lòng đăng nhập để xem giỏ hàng');
       }
 
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
       const response = await fetch(getApiUrl('/api/cart'), {
-        method: 'GET',
+        method: 'POST', // Use POST to send user info
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ userInfo })
       });
 
       if (!response.ok) {
@@ -58,8 +67,8 @@ const CartPage: React.FC = () => {
 
       const data = await response.json();
       
-      if (data.success && data.cartItems) {
-        setCartItems(data.cartItems);
+      if (data.success && data.items) {
+        setCartItems(data.items);
       } else {
         setCartItems([]);
       }
@@ -81,7 +90,7 @@ const CartPage: React.FC = () => {
     }
 
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         throw new Error('Vui lòng đăng nhập');
       }
@@ -109,7 +118,7 @@ const CartPage: React.FC = () => {
 
   const removeItem = async (cartId: number) => {
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         throw new Error('Vui lòng đăng nhập');
       }

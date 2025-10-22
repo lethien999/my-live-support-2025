@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 import AuthChatService from './AuthChatService';
 
-interface Message {
+export interface Message {
   id: string;
   content: string;
   senderId: string;
@@ -12,7 +12,7 @@ interface Message {
   type: 'text' | 'image' | 'file';
 }
 
-interface Room {
+export interface Room {
   id: string;
   name: string;
   type: 'customer-shop' | 'agent-customer';
@@ -54,30 +54,54 @@ class SocketService {
       // Get fresh token if not provided or expired
       let authToken = token;
       if (!authToken) {
-        const refreshedToken = await AuthChatService.refreshTokenIfNeeded();
-        if (!refreshedToken) {
+        console.log('🔍 SocketService: No token provided, attempting to get from AuthChatService...');
+        authToken = await AuthChatService.getToken() || undefined;
+        if (!authToken) {
+          console.log('❌ SocketService: No valid token available from AuthChatService');
           reject(new Error('No valid token available'));
           return;
         }
-        authToken = refreshedToken;
+        console.log('✅ SocketService: Got token from AuthChatService:', authToken);
       }
+      
+      // Ensure token is a string, not a Promise
+      if (authToken && typeof authToken === 'string') {
+        console.log('🔍 SocketService: Token is Promise, awaiting resolution...');
+        authToken = await authToken;
+        console.log('✅ SocketService: Resolved token:', authToken);
+      }
+      
+      console.log('🔍 SocketService: Using token for connection:', authToken);
+      console.log('🔍 SocketService: Token type:', typeof authToken);
+      console.log('🔍 SocketService: Token length:', authToken ? authToken.length : 'null');
+      
+      // Validate token before sending
+      if (!authToken || typeof authToken !== 'string' || authToken.trim() === '') {
+        console.error('❌ SocketService: Invalid token, cannot connect');
+        reject(new Error('Invalid token'));
+        return;
+      }
+      
+      // Debug token before sending
+      console.log('🔍 SocketService: Connecting with token:', authToken);
+      console.log('🔍 SocketService: Token type:', typeof authToken);
+      console.log('🔍 SocketService: Token length:', authToken?.length);
       
       // Optimized connection configuration
       this.socket = io('http://localhost:4000', {
         auth: {
           token: authToken
         },
-        transports: ['websocket', 'polling'],
-        timeout: 10000, // Reduced timeout
+        transports: ['polling', 'websocket'], // Try polling first
+        timeout: 20000, // Increased timeout
         forceNew: true,
         reconnection: true,
         reconnectionAttempts: this.maxReconnectAttempts,
         reconnectionDelay: this.reconnectDelay,
-        reconnectionDelayMax: 5000,
-        maxReconnectionAttempts: this.maxReconnectAttempts,
+        reconnectionDelayMax: 10000,
         // Performance optimizations
         upgrade: true,
-        rememberUpgrade: true,
+        rememberUpgrade: false, // Don't remember upgrade
         autoConnect: true,
       });
 
@@ -99,6 +123,9 @@ class SocketService {
           clearTimeout(this.connectionTimeout);
           this.connectionTimeout = null;
         }
+        
+        // Don't authenticate here - token is already sent in auth object
+        console.log('🔍 Socket connected, token already sent in auth object');
         
         this.connectionHandlers.forEach(handler => handler(true));
         resolve(true);
@@ -155,6 +182,8 @@ class SocketService {
 
       // Message handling with queue optimization
       this.socket.on('message:receive', (message: Message) => {
+        console.log('📨 SocketService: Received message:', message);
+        console.log('📨 SocketService: Adding to queue, current handlers:', this.messageHandlers.length);
         this.addMessageToQueue(message);
       });
 
@@ -163,6 +192,7 @@ class SocketService {
       });
 
       this.socket.on('message:sent', (message: Message) => {
+        // console.log('📤 Received message:sent event:', message);
         this.addMessageToQueue(message);
       });
 
@@ -174,6 +204,7 @@ class SocketService {
 
       this.socket.on('room:joined', (room: Room) => {
         console.log('🚪 Joined room:', room);
+        this.roomHandlers.forEach(handler => handler([room]));
       });
 
       this.socket.on('room:left', (roomId: string) => {
@@ -189,6 +220,15 @@ class SocketService {
         this.typingHandlers.forEach(handler => handler({ ...data, isTyping: false }));
       });
 
+      // Authentication response
+      this.socket.on('authenticated', (data) => {
+        if (data.success) {
+          console.log('✅ Socket authenticated successfully');
+        } else {
+          console.error('❌ Socket authentication failed:', data.error);
+        }
+      });
+      
       // Error handling
       this.socket.on('error', (error) => {
         console.error('❌ Socket error:', error);
@@ -206,6 +246,7 @@ class SocketService {
 
   // Optimized message queue processing
   private addMessageToQueue(message: Message): void {
+    // console.log('📥 Adding message to queue:', message);
     this.messageQueue.push(message);
     
     if (!this.isProcessingQueue) {
@@ -219,13 +260,20 @@ class SocketService {
     }
 
     this.isProcessingQueue = true;
+    // console.log('🔄 Processing message queue, queue length:', this.messageQueue.length);
 
     while (this.messageQueue.length > 0) {
       const batch = this.messageQueue.splice(0, this.QUEUE_BATCH_SIZE);
+      // console.log('📦 Processing batch of', batch.length, 'messages');
       
       // Process batch
       batch.forEach(message => {
-        this.messageHandlers.forEach(handler => handler(message));
+        console.log('📨 SocketService: Processing message:', message.content);
+        console.log('📨 SocketService: Calling', this.messageHandlers.length, 'handlers');
+        this.messageHandlers.forEach((handler, index) => {
+          console.log(`📨 SocketService: Calling handler ${index + 1}/${this.messageHandlers.length}`);
+          handler(message);
+        });
       });
 
       // Small delay to prevent blocking
@@ -280,6 +328,10 @@ class SocketService {
     }
   }
 
+  onRoomJoined(handler: (data: any) => void) {
+    this.roomHandlers.push(handler);
+  }
+
   leaveRoom(roomId: string) {
     if (this.socket?.connected) {
       console.log('🚪 Leaving room:', roomId);
@@ -290,7 +342,7 @@ class SocketService {
   // Message sending
   sendMessage(roomId: string, content: string, type: 'text' | 'image' | 'file' = 'text') {
     if (this.socket?.connected) {
-      const message: Omit<Message, 'id' | 'timestamp'> = {
+      const message = {
         content,
         senderId: this.getCurrentUserId(),
         senderName: this.getCurrentUserName(),
@@ -321,19 +373,27 @@ class SocketService {
 
   // Event listeners
   onMessage(handler: (message: Message) => void) {
+    // Don't clear existing handlers - allow multiple listeners
     this.messageHandlers.push(handler);
+    console.log('📨 SocketService: Added message handler, total handlers:', this.messageHandlers.length);
   }
 
   onRooms(handler: (rooms: Room[]) => void) {
+    // Don't clear existing handlers - allow multiple listeners
     this.roomHandlers.push(handler);
+    console.log('📋 SocketService: Added rooms handler, total handlers:', this.roomHandlers.length);
   }
 
   onConnection(handler: (connected: boolean) => void) {
+    // Clear existing handlers to prevent duplicates
+    this.connectionHandlers = [];
     this.connectionHandlers.push(handler);
   }
 
   onTyping(handler: (data: { roomId: string; user: string; isTyping: boolean }) => void) {
+    // Don't clear existing handlers - allow multiple listeners
     this.typingHandlers.push(handler);
+    console.log('⌨️ SocketService: Added typing handler, total handlers:', this.typingHandlers.length);
   }
 
   // Utility methods
@@ -370,4 +430,4 @@ class SocketService {
 }
 
 export default new SocketService();
-export type { Message, Room };
+// export type { Message, Room };

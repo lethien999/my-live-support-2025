@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import AuthChatService from '../services/AuthChatService';
-import { getApiUrl, API_CONFIG } from '../config/api';
+import { getApiUrl } from '../config/api';
 
 interface OrderItem {
   ProductID: number;
@@ -82,7 +82,7 @@ const CheckoutPage: React.FC = () => {
       console.log('🛒 CheckoutPage: Loading order items...');
       setLoading(true);
       
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         console.error('❌ CheckoutPage: No token available for checkout');
         setOrderItems([]);
@@ -91,11 +91,22 @@ const CheckoutPage: React.FC = () => {
 
       console.log('🔑 CheckoutPage: Token available, fetching cart...');
 
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
       // Load cart items from backend
       const response = await fetch(getApiUrl('/api/cart'), {
+        method: 'POST', // Use POST to send user info
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ userInfo })
       });
       
       if (!response.ok) {
@@ -105,9 +116,9 @@ const CheckoutPage: React.FC = () => {
       const data = await response.json();
       console.log('📦 CheckoutPage: Cart data received:', data);
       
-      if (data.success && data.cartItems) {
+      if (data.success && data.items) {
         // Convert cart items to order items format
-        const orderItems: OrderItem[] = data.cartItems.map((item: any) => ({
+        const orderItems: OrderItem[] = data.items.map((item: any) => ({
           ProductID: item.ProductID,
           ProductName: item.ProductName,
           Price: item.Price,
@@ -150,7 +161,7 @@ const CheckoutPage: React.FC = () => {
     setSubmitting(true);
     
     try {
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       if (!token) {
         throw new Error('Vui lòng đăng nhập');
       }
@@ -757,7 +768,7 @@ const CheckoutPage: React.FC = () => {
                           }}
                           onError={(e) => {
                             e.currentTarget.style.display = 'none';
-                            e.currentTarget.nextElementSibling.style.display = 'flex';
+                            (e.currentTarget.nextElementSibling as HTMLElement).style.display = 'flex';
                           }}
                         />
                       ) : null}

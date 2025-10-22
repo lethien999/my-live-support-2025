@@ -1,10 +1,10 @@
 import { Server as SocketIOServer } from 'socket.io';
-import { ChatGateway } from './chatGateway';
+import { SimpleChatGateway } from './SimpleChatGateway';
 
-let chatGateway: ChatGateway | null = null;
+let chatGateway: SimpleChatGateway | null = null;
 
 export const initializeSockets = (io: SocketIOServer) => {
-  chatGateway = new ChatGateway(io);
+  chatGateway = new SimpleChatGateway(io);
   return chatGateway;
 };
 

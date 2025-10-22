@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { formatDate } from '../utils/dateUtils';
 import AuthChatService from '../services/AuthChatService';
-import { getApiUrl, API_CONFIG } from '../config/api';
+import OrderService from '../services/OrderService';
+import { getApiUrl } from '../config/api';
 
 interface Order {
   OrderID: number;
@@ -31,12 +33,7 @@ const OrderManagementPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    AuthChatService.init();
-    const currentUser = AuthChatService.getCurrentUser();
-    
-    if (currentUser) {
-      loadOrders();
-    }
+    initializeUser();
     
     // Listen for order updates (when new orders are created)
     const handleOrderUpdate = () => {
@@ -53,11 +50,34 @@ const OrderManagementPage: React.FC = () => {
     };
   }, []);
 
+  const initializeUser = async () => {
+    try {
+      AuthChatService.init();
+      let currentUser = AuthChatService.getCurrentUser();
+      
+      if (!currentUser) {
+        console.log('🔄 Customer not logged in, attempting auto-login...');
+        const loginSuccess = await AuthChatService.autoLoginCustomer();
+        if (loginSuccess) {
+          currentUser = AuthChatService.getCurrentUser();
+        }
+      }
+      
+      if (currentUser) {
+        loadOrders();
+      } else {
+        console.error('❌ Could not initialize user');
+      }
+    } catch (error) {
+      console.error('❌ Error initializing user:', error);
+    }
+  };
+
   const loadOrders = async () => {
     try {
       setLoading(true);
       
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       console.log('🔍 OrderManagementPage: Loading orders with token:', token);
       
       const response = await fetch(getApiUrl('/api/orders'), {
@@ -118,7 +138,7 @@ const OrderManagementPage: React.FC = () => {
         orderTotal: order.TotalAmount || 0,
         orderItems: order.Items || [],
         // Pre-filled message with order details
-        message: `Xin chào! Tôi có vấn đề với đơn hàng ${order.OrderNumber} (${order.ShopName}). Đơn hàng được đặt ngày ${new Date(order.CreatedAt).toLocaleDateString('vi-VN')} với tổng giá trị ${(order.TotalAmount || 0).toLocaleString('vi-VN')} VND. Hiện tại trạng thái: ${getStatusText(order.Status)}. Tôi cần hỗ trợ về vấn đề này.`,
+        message: `Xin chào! Tôi có vấn đề với đơn hàng ${order.OrderNumber} (${order.ShopName}). Đơn hàng được đặt ngày ${formatDate(order.CreatedAt)} với tổng giá trị ${(order.TotalAmount || 0).toLocaleString('vi-VN')} VND. Hiện tại trạng thái: ${getStatusText(order.Status)}. Tôi cần hỗ trợ về vấn đề này.`,
         // Additional context for agent
         context: {
           orderNumber: order.OrderNumber,
@@ -138,8 +158,9 @@ const OrderManagementPage: React.FC = () => {
         total: order.TotalAmount || 0
       });
       
-      // Navigate to chat page
-      navigateTo('/chat');
+      // Navigate to chat page with order context
+      const query = `?from=order&orderId=${encodeURIComponent(order.OrderID)}&shop=${encodeURIComponent(order.ShopName || '')}`;
+      navigateTo(`/shop-chat${query}`);
     } catch (error) {
       console.error('❌ Error in handleContactShop:', error);
       alert('Có lỗi xảy ra khi liên hệ shop. Vui lòng thử lại.');
@@ -285,7 +306,7 @@ const OrderManagementPage: React.FC = () => {
                       color: '#999',
                       margin: 0
                     }}>
-                      Ngày đặt: {new Date(order.CreatedAt).toLocaleDateString('vi-VN')}
+                      Ngày đặt: {formatDate(order.CreatedAt)}
                     </p>
                   </div>
                   
@@ -472,7 +493,7 @@ const OrderManagementPage: React.FC = () => {
                         color: '#333',
                         margin: 0
                       }}>
-                        {new Date(order.DeliveredAt).toLocaleDateString('vi-VN')}
+                        {formatDate(order.DeliveredAt)}
                       </p>
                     </div>
                   )}
@@ -485,7 +506,18 @@ const OrderManagementPage: React.FC = () => {
                   flexWrap: 'wrap'
                 }}>
                   <button
-                    onClick={() => handleContactShop(order)}
+                    onClick={async () => {
+                      try {
+                        console.log('🔄 Contacting shop for order:', order.OrderID);
+                        const conversationId = await OrderService.contactShopForOrder(order.OrderID.toString());
+                        console.log('✅ Conversation opened:', conversationId);
+                        window.location.href = `/customer-chat?c=${conversationId}`;
+                      } catch (error) {
+                        console.error('❌ Error contacting shop:', error);
+                        const errorMessage = error instanceof Error ? error.message : 'Không thể liên hệ shop. Vui lòng thử lại.';
+                        alert(`Lỗi: ${errorMessage}`);
+                      }
+                    }}
                     style={{
                       padding: '8px 16px',
                       backgroundColor: '#3b82f6',

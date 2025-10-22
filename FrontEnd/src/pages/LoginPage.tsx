@@ -45,7 +45,7 @@ const LoginPage: React.FC = () => {
     setError('');
     
     try {
-      const user = await AuthChatService.login(email, password);
+      await AuthChatService.login(email, password);
       
       // Redirect to dashboard based on role
       setTimeout(() => {

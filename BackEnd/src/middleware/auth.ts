@@ -1,7 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { config } from '@/config/env';
-import DatabaseService from '@/services/database.service';
+import { HybridTokenService } from '../services/HybridTokenService';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -24,17 +22,23 @@ export const requireAuth = async (
       return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
 
-    const decoded = jwt.verify(token, config.jwtSecret) as any;
+    // Use HybridTokenService for validation
+    const validation = await HybridTokenService.validateToken(token);
     
-    // For now, skip database check to avoid connection issues
+    if (!validation.isValid || !validation.userEmail || !validation.userId) {
+      return res.status(401).json({ error: 'Invalid token.' });
+    }
+
     req.user = {
-      id: decoded.userId,
-      userId: decoded.userId,
-      email: decoded.email,
-      role: decoded.role
+      id: validation.userId.toString(),
+      userId: validation.userId.toString(),
+      email: validation.userEmail,
+      role: validation.role || 'Customer'
     };
+    
     next();
   } catch (error) {
+    console.error('Auth middleware error:', error);
     res.status(401).json({ error: 'Invalid token.' });
   }
 };

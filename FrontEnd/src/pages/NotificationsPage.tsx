@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatDate } from '../utils/dateUtils';
 import AuthChatService from '../services/AuthChatService';
 import { getApiUrl } from '../config/api';
 
@@ -302,7 +303,7 @@ const NotificationsPage: React.FC = () => {
                       </h3>
                       <div className="flex items-center space-x-2">
                         <span className="text-xs text-gray-500">
-                          {new Date(notification.CreatedAt).toLocaleDateString('vi-VN')}
+                          {formatDate(notification.CreatedAt)}
                         </span>
                         {!notification.IsRead && (
                           <div className="w-2 h-2 bg-blue-500 rounded-full"></div>

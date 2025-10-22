@@ -4,7 +4,7 @@ import { BotResponses } from './BotResponses';
 class AIBotService {
   private static apiKey: string = 'AIzaSyBvxL5IKR5EQN5ZRPDaV9RYWKIZcfx3_SM'; // API key từ hình ảnh
   private static baseUrl: string = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent';
-  private static useFallback: boolean = true; // Sử dụng fallback responses nếu API lỗi
+  private static useFallback: boolean = false; // Sử dụng Gemini AI thực tế
 
   // Gửi tin nhắn đến AI bot và nhận phản hồi
   static async sendMessage(message: string, context?: {
@@ -63,13 +63,13 @@ class AIBotService {
 
   // Tạo prompt phù hợp với context
   private static createPrompt(message: string, context?: any): string {
-    const shopName = context?.shopName || 'cửa hàng';
+    const shopName = context?.shopName || 'MUJI Store';
     const customerName = context?.customerName || 'bạn';
     const isFirstMessage = context?.isFirstMessage || false;
-    const productCategory = context?.productCategory || 'sản phẩm';
+    const productCategory = context?.productCategory || 'sản phẩm nội thất và đồ dùng gia đình';
 
     if (isFirstMessage) {
-      return `Bạn là AI assistant của ${shopName}, một cửa hàng bán ${productCategory}. 
+      return `Bạn là AI assistant của ${shopName}, một cửa hàng bán ${productCategory} chất lượng cao. 
       
 Khách hàng ${customerName} vừa vào chat lần đầu. Hãy chào mừng họ một cách thân thiện và chuyên nghiệp.
 
@@ -79,12 +79,13 @@ Nhiệm vụ của bạn:
 3. Hỏi khách hàng cần hỗ trợ gì
 4. Thông báo rằng nhân viên sẽ phản hồi sớm nhất có thể
 5. Giữ giọng điệu thân thiện, chuyên nghiệp, và hữu ích
+6. Sử dụng emoji phù hợp để tạo cảm giác thân thiện
 
 Tin nhắn của khách hàng: "${message}"
 
 Hãy phản hồi bằng tiếng Việt, ngắn gọn (dưới 150 từ), và phù hợp với văn hóa Việt Nam.`;
     } else {
-      return `Bạn là AI assistant của ${shopName}, một cửa hàng bán ${productCategory}.
+      return `Bạn là AI assistant của ${shopName}, một cửa hàng bán ${productCategory} chất lượng cao.
 
 Khách hàng ${customerName} đang hỏi: "${message}"
 
@@ -93,6 +94,7 @@ Nhiệm vụ của bạn:
 2. Nếu không biết câu trả lời, hãy thừa nhận và đề xuất liên hệ nhân viên
 3. Luôn giữ giọng điệu thân thiện và chuyên nghiệp
 4. Thông báo rằng nhân viên sẽ phản hồi chi tiết hơn
+5. Sử dụng emoji phù hợp để tạo cảm giác thân thiện
 
 Hãy phản hồi bằng tiếng Việt, ngắn gọn (dưới 100 từ), và phù hợp với văn hóa Việt Nam.`;
     }

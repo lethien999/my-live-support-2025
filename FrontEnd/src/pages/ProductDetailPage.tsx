@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { getApiUrl, API_CONFIG } from '../config/api';
+import { useParams } from 'react-router-dom';
+import { getApiUrl } from '../config/api';
+import AuthChatService from '../services/AuthChatService';
 
 interface Product {
   id: string;
@@ -32,13 +34,14 @@ interface Product {
 }
 
 const ProductDetailPage: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
   const [product, setProduct] = useState<Product | null>(null);
   const [selectedImage, setSelectedImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
-  const [selectedSpec, setSelectedSpec] = useState<string>('');
+  const [_selectedSpec, _setSelectedSpec] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'description' | 'specifications' | 'reviews'>('description');
   const [loading, setLoading] = useState(true);
-  const [cart, setCart] = useState<Product[]>([]);
+  const [_cart, _setCart] = useState<Product[]>([]);
 
   // Load product data from API
   useEffect(() => {
@@ -46,9 +49,8 @@ const ProductDetailPage: React.FC = () => {
       try {
         setLoading(true);
         
-        // Get product ID from URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const productId = urlParams.get('id');
+        // Get product ID from route params
+        const productId = id;
         
         if (!productId) {
           setLoading(false);
@@ -56,13 +58,21 @@ const ProductDetailPage: React.FC = () => {
         }
 
         // Load product from API
-        const response = await fetch(getApiUrl(`/api/products/${productId}`));
+        console.log('🔍 ProductDetailPage: Loading product with ID:', productId);
+        const apiUrl = getApiUrl(`/api/products/${productId}`);
+        console.log('🔍 ProductDetailPage: API URL:', apiUrl);
+        
+        const response = await fetch(apiUrl);
+        console.log('🔍 ProductDetailPage: Response status:', response.status);
+        
         const productData = await response.json();
+        console.log('🔍 ProductDetailPage: Response data:', productData);
         
         if (response.ok) {
           setProduct(productData.product);
+          console.log('✅ ProductDetailPage: Product loaded successfully');
         } else {
-          console.error('Error loading product:', productData.error);
+          console.error('❌ ProductDetailPage: Error loading product:', productData.error);
         }
         
       } catch (error) {
@@ -75,21 +85,49 @@ const ProductDetailPage: React.FC = () => {
     loadProduct();
   }, []);
 
-  const addToCart = () => {
+  const addToCart = async () => {
     if (!product || !product.inStock) {
       alert('Sản phẩm hiện đang hết hàng');
       return;
     }
     
-    setCart(prev => {
-      const existingItem = prev.find(item => item.id === product.id);
-      if (existingItem) {
-        alert('Sản phẩm đã có trong giỏ hàng');
-        return prev;
+    try {
+      const token = await AuthChatService.getToken();
+      if (!token) {
+        alert('Vui lòng đăng nhập để thêm sản phẩm vào giỏ hàng');
+        return;
       }
-      return [...prev, product];
-    });
-    alert(`Đã thêm ${quantity} sản phẩm vào giỏ hàng!`);
+
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
+      const response = await fetch(getApiUrl('/api/cart/add'), {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          productId: product.id,
+          quantity: quantity,
+          userInfo
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      alert(`Đã thêm ${quantity} sản phẩm vào giỏ hàng!`);
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+      alert('Không thể thêm sản phẩm vào giỏ hàng');
+    }
   };
 
   const formatPrice = (price: number) => {

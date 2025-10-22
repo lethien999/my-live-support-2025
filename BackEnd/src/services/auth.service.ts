@@ -1,10 +1,10 @@
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '@/config/env';
 import { AuthTokens, JWTPayload } from '@/types/common';
 import DatabaseService from './database.service';
 import logger from '@/config/logger';
+import { HybridTokenService } from './HybridTokenService';
 
 export class AuthService {
   private static db = DatabaseService.getInstance();
@@ -29,7 +29,7 @@ export class AuthService {
     const tokens = await this.generateTokens(user.UserID, user.Email, 'Customer');
 
     // Log audit
-    await this.db.logAudit(user.UserID, 'USER_REGISTER', 'Users', user.UserID, undefined, JSON.stringify({ email, name }));
+    await this.db.logAudit(user.UserID, 'USER_REGISTER', 'Users', user.UserID, null, JSON.stringify({ email, name }));
 
     logger.info(`User registered: ${email}`);
 
@@ -111,25 +111,28 @@ export class AuthService {
   }
 
   static async generateTokens(userId: number, email: string, role: string): Promise<AuthTokens> {
-    const payload: JWTPayload = { userId: userId.toString(), email, role };
+    // Use HybridTokenService to create both JWT and Database tokens
+    const tokens = await HybridTokenService.generateTokens(userId, email, role);
     
-    const accessToken = jwt.sign(payload, config.jwtSecret as string, {
-      expiresIn: config.jwtExpires,
-    } as jwt.SignOptions);
-
-    const refreshToken = jwt.sign(
-      { userId: userId.toString(), email },
-      config.jwtRefreshSecret as string,
-      { expiresIn: config.jwtRefreshExpires } as jwt.SignOptions
-    );
-
-    return { accessToken, refreshToken };
+    return { 
+      accessToken: tokens.jwtToken, 
+      refreshToken: tokens.refreshToken 
+    };
   }
 
   static async verifyToken(token: string): Promise<JWTPayload> {
     try {
-      const decoded = jwt.verify(token, config.jwtSecret) as JWTPayload;
-      return decoded;
+      const validation = await HybridTokenService.validateToken(token);
+      
+      if (!validation.isValid || !validation.userEmail || !validation.userId) {
+        throw new Error('Invalid token');
+      }
+
+      return {
+        userId: validation.userId.toString(),
+        email: validation.userEmail,
+        role: validation.role || 'Customer'
+      };
     } catch (error) {
       throw new Error('Invalid token');
     }
@@ -137,14 +140,12 @@ export class AuthService {
 
   static async refreshToken(refreshToken: string): Promise<AuthTokens> {
     try {
-      const decoded = jwt.verify(refreshToken, config.jwtRefreshSecret) as any;
-      const user = await this.db.getUserById(parseInt(decoded.userId));
+      const tokens = await HybridTokenService.refreshTokens(refreshToken);
       
-      if (!user) {
-        throw new Error('User not found');
-      }
-
-      return await this.generateTokens(user.UserID, user.Email, user.RoleName || 'Customer');
+      return { 
+        accessToken: tokens.jwtToken, 
+        refreshToken: tokens.refreshToken 
+      };
     } catch (error) {
       throw new Error('Invalid refresh token');
     }

@@ -17,11 +17,7 @@ export class ChatService {
     const message = await this.db.sendMessage(
       data.roomId,
       data.senderId,
-      data.content,
-      data.messageType || 'Text',
-      data.filePath,
-      data.fileName,
-      data.fileSize
+      data.content
     );
 
     logger.info('Message sent', { 
@@ -72,7 +68,7 @@ export class ChatService {
   }
 
   static async createRoom(ticketId: number, roomName?: string) {
-    const room = await this.db.createChatRoom(ticketId, roomName);
+    const room = await this.db.createChatRoom(ticketId, roomName || `Room-${ticketId}`);
     
     logger.info('Chat room created', { roomId: room.RoomID, ticketId });
 

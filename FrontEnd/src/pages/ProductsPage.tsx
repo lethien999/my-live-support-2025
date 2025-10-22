@@ -21,7 +21,7 @@ const ProductsPage: React.FC = () => {
       setAddingToCart(product.ProductID);
       
       const user = AuthChatService.getCurrentUser();
-      const token = AuthChatService.getToken();
+      const token = await AuthChatService.getToken();
       
       // Debug sessionStorage directly
       const directToken = sessionStorage.getItem('accessToken');
@@ -40,6 +40,14 @@ const ProductsPage: React.FC = () => {
         return;
       }
 
+      // Get current user info for Google token authentication
+      const currentUser = await AuthChatService.getCurrentUser();
+      const userInfo = currentUser ? {
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role
+      } : null;
+
       const response = await fetch(getApiUrl('/api/cart/add'), {
         method: 'POST',
         headers: {
@@ -48,7 +56,8 @@ const ProductsPage: React.FC = () => {
         },
         body: JSON.stringify({
           productId: product.ProductID,
-          quantity: 1
+          quantity: 1,
+          userInfo
         }),
       });
 

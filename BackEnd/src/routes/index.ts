@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { AuthController } from '@/controllers/auth.controller';
-import { TicketController } from '@/controllers/tickets.controller';
 import { ProductController } from '@/controllers/products.controller';
 import { ChatController } from '@/controllers/chat.controller';
+import { FileController } from '@/controllers/file.controller';
+import { RatingController } from '@/controllers/rating.controller';
 import { requireAuth, requireRole } from '@/middleware/auth';
 import { authLimiter } from '@/middleware/rateLimit';
 import googleAuthRoutes from './googleAuth';
@@ -34,15 +35,6 @@ router.get('/auth/me', requireAuth, AuthController.me);
 // Google OAuth routes
 router.use('/', googleAuthRoutes);
 
-// Ticket routes
-router.post('/tickets', requireAuth, TicketController.createTicket);
-router.get('/tickets', requireAuth, TicketController.getTickets);
-router.get('/tickets/:id', requireAuth, TicketController.getTicketById);
-router.patch('/tickets/:id', requireAuth, TicketController.updateTicket);
-
-router.get('/departments', TicketController.getDepartments);
-router.get('/agents', requireAuth, requireRole(['Agent', 'Admin']), TicketController.getAgents);
-
 // Product routes
 router.get('/products', ProductController.getProducts);
 router.get('/products/:id', ProductController.getProductById);
@@ -60,15 +52,15 @@ router.get('/categories', ProductController.getCategories);
 router.post('/reviews', requireAuth, ProductController.createReview);
 router.get('/products/:productId/reviews', ProductController.getReviews);
 
-// File routes - disabled
-// router.post('/files', requireAuth, FileController.getUploadMiddleware(), FileController.uploadFile);
-// router.get('/files/:id', requireAuth, FileController.getFile);
-// router.delete('/files/:id', requireAuth, FileController.deleteFile);
+// File routes - ENABLED
+router.post('/files', requireAuth, FileController.getUploadMiddleware().single('file'), FileController.uploadFile);
+router.get('/files/:id', requireAuth, FileController.getFile);
+router.delete('/files/:id', requireAuth, FileController.deleteFile);
 
-// Rating routes - disabled
-// router.post('/ratings', requireAuth, RatingController.createRating);
-// router.get('/ratings', requireAuth, requireRole(['Agent', 'Admin']), RatingController.getRatings);
-// router.get('/ratings/stats', requireAuth, requireRole(['Agent', 'Admin']), RatingController.getRatingStats);
+// Rating routes - ENABLED
+router.post('/ratings', requireAuth, RatingController.createRating);
+router.get('/ratings', requireAuth, requireRole(['Agent', 'Admin']), RatingController.getRatings);
+router.get('/ratings/stats', requireAuth, requireRole(['Agent', 'Admin']), RatingController.getRatingStats);
 
 // Chat routes
 router.get('/chat/conversations', requireAuth, ChatController.getConversations);
@@ -290,9 +282,9 @@ router.get('/orders', requireAuth, async (req, res) => {
 });
 
 // Shopping Cart API
-router.get('/cart', async (req, res) => {
+router.get('/cart', requireAuth, async (req, res) => {
   try {
-    const userId = 3; // TEMPORARY: Use hardcoded user for testing
+    const userId = (req as any).user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -303,20 +295,20 @@ router.get('/cart', async (req, res) => {
       SELECT 
         sc.CartID as CartID,
         sc.Quantity,
-        sc.CreatedAt,
+        sc.AddedAt,
         p.ProductID,
         p.ProductName,
         p.Price,
         p.Description,
-        s.ShopName,
-        s.ShopID,
+        c.CategoryName as ShopName,
+        c.CategoryID as ShopID,
         '👕' as Image,
         'MUJI-' + CAST(p.ProductID as NVARCHAR(10)) as SKU
-      FROM ShoppingCart sc
+      FROM Cart sc
       LEFT JOIN Products p ON sc.ProductID = p.ProductID
-      LEFT JOIN Shops s ON p.ShopID = s.ShopID
-      WHERE sc.CustomerID = ${userId}
-      ORDER BY sc.CreatedAt DESC
+      LEFT JOIN Categories c ON p.CategoryID = c.CategoryID
+      WHERE sc.UserID = ${userId}
+      ORDER BY sc.AddedAt DESC
     `;
 
     res.json({
@@ -332,9 +324,9 @@ router.get('/cart', async (req, res) => {
   }
 });
 
-router.post('/cart/add', async (req, res) => {
+router.post('/cart/add', requireAuth, async (req, res) => {
   try {
-    const userId = 3; // TEMPORARY: Use hardcoded user for testing
+    const userId = (req as any).user?.userId;
     const { productId, quantity } = req.body;
     
     if (!productId || !quantity) {
@@ -345,22 +337,22 @@ router.post('/cart/add', async (req, res) => {
     
     // Check if item already exists in cart
     const existingItem = await sql.query`
-      SELECT CartID, Quantity FROM ShoppingCart 
-      WHERE CustomerID = ${userId} AND ProductID = ${productId}
+      SELECT CartID, Quantity FROM Cart 
+      WHERE UserID = ${userId} AND ProductID = ${productId}
     `;
 
     if (existingItem.recordset.length > 0) {
       // Update quantity
       await sql.query`
-        UPDATE ShoppingCart 
+        UPDATE Cart 
         SET Quantity = Quantity + ${quantity}, UpdatedAt = GETDATE()
-        WHERE CustomerID = ${userId} AND ProductID = ${productId}
+        WHERE UserID = ${userId} AND ProductID = ${productId}
       `;
     } else {
       // Add new item
       await sql.query`
-        INSERT INTO ShoppingCart (CustomerID, ProductID, Quantity, CreatedAt)
-        VALUES (${userId}, ${productId}, ${quantity}, GETDATE())
+        INSERT INTO Cart (UserID, ProductID, Quantity, AddedAt, UpdatedAt)
+        VALUES (${userId}, ${productId}, ${quantity}, GETDATE(), GETDATE())
       `;
     }
 
@@ -389,8 +381,8 @@ router.delete('/cart/:itemId', requireAuth, async (req, res) => {
     await sql.connect(config);
     
     await sql.query`
-      DELETE FROM ShoppingCart 
-      WHERE CartItemID = ${itemId} AND CustomerID = ${userId}
+      DELETE FROM Cart 
+      WHERE CartID = ${itemId} AND UserID = ${userId}
     `;
 
     res.json({
@@ -446,7 +438,7 @@ router.post('/orders/create', requireAuth, async (req, res) => {
 
     // Clear cart
     await sql.query`
-      DELETE FROM ShoppingCart WHERE CustomerID = ${userId}
+      DELETE FROM Cart WHERE UserID = ${userId}
     `;
 
     res.json({

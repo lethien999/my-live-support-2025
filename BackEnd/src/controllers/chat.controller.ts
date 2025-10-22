@@ -142,9 +142,9 @@ export class ChatController {
     try {
       const { chatId, content, type = 'text' } = req.body;
       
-      // TEMPORARY: Use hardcoded user for testing
-      const userId = 3; // customer@muji.com
-      const userRole = 'Customer';
+      // Get user from authentication middleware
+      const userId = (req as any).user?.userId;
+      const userRole = (req as any).user?.userRole || 'Customer';
       
       if (!chatId || !content) {
         return res.status(400).json({ error: 'Missing required fields' });
