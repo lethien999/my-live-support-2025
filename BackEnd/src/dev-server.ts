@@ -4,12 +4,16 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { connectDatabase, getConnection } from './db';
 import sql from 'mssql';
 import { redisService } from './services/redisService';
 import { InMemoryCache } from './services/inMemoryCache';
 import { AIBotService } from './services/aiBotService';
 import { HybridTokenService } from './services/HybridTokenService';
+import adminRoutes from './routes/adminRoutes';
 
 // Helper function to validate token using HybridTokenService
 async function validateTokenAndGetUserEmail(token: string): Promise<{ userEmail: string | null; userId?: number; role?: string }> {
@@ -281,6 +285,42 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Serve static files from uploads directory
+app.use('/uploads', express.static('uploads'));
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = 'uploads/chat-files';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Allow images and videos
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(null, false);
+    }
+  }
+});
+
+// Admin routes
+app.use('/api/admin', adminRoutes);
+
 // Add headers for Google OAuth
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -381,7 +421,7 @@ app.get('/api/departments', async (req, res) => {
 // Get user tickets
 app.get('/api/tickets', async (req, res) => {
   try {
-    console.log('🔍 Tickets API called');
+    // console.log('🔍 Tickets API called');
     
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
@@ -393,19 +433,7 @@ app.get('/api/tickets', async (req, res) => {
       return res.status(401).json({ error: 'Token không hợp lệ' });
     }
 
-    const sql = require('mssql');
-    const config = {
-      user: 'thien',
-      password: '1909',
-      server: 'localhost',
-      database: 'live_support',
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-      },
-    };
-
-    await sql.connect(config);
+    const sql = await getDbConnection();
 
     // Get user ID
     const userResult = await sql.query`
@@ -413,7 +441,6 @@ app.get('/api/tickets', async (req, res) => {
     `;
 
     if (userResult.recordset.length === 0) {
-      // Pool stays open for reuse
       return res.status(404).json({ error: 'User không tồn tại' });
     }
 
@@ -436,13 +463,22 @@ app.get('/api/tickets', async (req, res) => {
       ORDER BY t.CreatedAt DESC
     `;
 
-    // Pool stays open for reuse
+    // console.log('✅ Tickets loaded:', ticketsResult.recordset.length);
+    
+    // Transform data to match frontend expectations
+    const tickets = ticketsResult.recordset.map((ticket: any) => ({
+      ticketId: ticket.TicketID,
+      ticketNumber: `TKT-${ticket.TicketID.toString().padStart(6, '0')}`,
+      title: ticket.Title,
+      description: ticket.Description,
+      statusName: ticket.Status || 'Open',
+      priorityLevel: ticket.Priority || 'Medium',
+      createdAt: ticket.CreatedAt,
+      customerName: 'Customer',
+      customerEmail: userEmail
+    }));
 
-    console.log('✅ Tickets loaded:', ticketsResult.recordset.length);
-    res.json({
-      success: true,
-      data: ticketsResult.recordset
-    });
+    res.json(tickets);
 
   } catch (error: any) {
     console.error('❌ Tickets error:', error);
@@ -501,6 +537,7 @@ app.post('/api/tickets', async (req, res) => {
     // Create ticket
     const insertResult = await sql.query`
       INSERT INTO Tickets (Title, Description, DepartmentID, CustomerID, Priority, Status)
+      OUTPUT INSERTED.TicketID
       VALUES (${title}, ${description}, ${departmentId}, ${userId}, ${priority}, 'Open')
     `;
 
@@ -510,7 +547,7 @@ app.post('/api/tickets', async (req, res) => {
     res.json({
       success: true,
       message: 'Ticket đã được tạo thành công',
-      ticketId: insertResult.recordset.insertId
+      ticketId: insertResult.recordset[0].TicketID
     });
 
   } catch (error: any) {
@@ -679,18 +716,17 @@ app.post('/api/auth/admin-login', async (req, res) => {
       console.log('✅ Admin user created:', email);
     }
     
-    // Generate tokens
-    const accessToken = generateToken('access');
-    const refreshToken = generateToken('refresh');
+    // Generate tokens using HybridTokenService
+    const tokens = await HybridTokenService.generateTokens(
+      userResult.recordset[0]?.UserID || 1,
+      email,
+      'Admin'
+    );
     
-    // Store tokens
-    setActiveToken(accessToken, email);
-    refreshTokens.set(refreshToken, {
-      userEmail: email,
-      expiresAt: Date.now() + 604800000 // 7 days
-    });
+    console.log(`✅ Admin login successful: ${email} - ${tokens.databaseToken}`);
     
-    console.log(`✅ Admin login successful: ${email} - ${accessToken}`);
+    // Store token in activeTokens map for cart API compatibility
+    setActiveToken(tokens.databaseToken, email);
     
     res.json({
       success: true,
@@ -702,8 +738,8 @@ app.post('/api/auth/admin-login', async (req, res) => {
         role: 'Admin'
       },
       tokens: { 
-        accessToken: accessToken, 
-        refreshToken: refreshToken 
+        accessToken: tokens.databaseToken, 
+        refreshToken: tokens.refreshToken 
       }
     });
     
@@ -2112,85 +2148,206 @@ app.get('/api/chat/messages/:roomId', async (req, res) => {
   console.log('🔍 Loading messages for room:', roomId);
   
   try {
-    // 1. Try to get from memory first (fast)
-    let messages = messageStorage.get(roomId) || [];
+    // Try to load from SQL Server first
+    console.log('📨 Loading messages from SQL Server...');
+    const sql = await getDbConnection();
     
-    // 2. If no messages in memory, load from SQL Server
-    if (messages.length === 0) {
-      console.log('📨 No messages in memory, loading from SQL Server...');
-      const pool = await getConnection();
-      const result = await pool.request()
-        .input('roomId', parseInt(roomId))
-        .query(`
-          SELECT TOP 50 
-            MessageID as id,
-            RoomID as roomId,
-            SenderID as senderId,
-            Content as content,
-            MessageType as type,
-            CreatedAt as timestamp
-          FROM Messages 
-          WHERE RoomID = @roomId
-          ORDER BY CreatedAt DESC
-        `);
-      
-      messages = result.recordset.map((row: any) => ({
-        id: row.id.toString(),
-        roomId: row.roomId.toString(),
-        senderId: row.senderId.toString(),
-        content: row.content,
-        type: row.type || 'text',
-        timestamp: row.timestamp.toISOString(),
+    const result = await sql.query`
+      SELECT TOP 50 
+        MessageID,
+        RoomID,
+        SenderID,
+        Content,
+        MessageType,
+        CreatedAt
+      FROM Messages 
+      WHERE RoomID = ${parseInt(roomId)}
+      ORDER BY CreatedAt ASC
+    `;
+    
+    console.log(`📊 SQL query result for room ${roomId}:`, result.recordset.length, 'messages found');
+    
+    if (result.recordset.length > 0) {
+      const messages = result.recordset.map((row: any) => ({
+        id: row.MessageID.toString(),
+        roomId: row.RoomID.toString(),
+        senderId: row.SenderID.toString(),
+        content: row.Content,
+        type: row.MessageType || 'text',
+        timestamp: row.CreatedAt.toISOString(),
         senderName: 'User', // Will be updated by frontend
         senderRole: 'Customer' // Will be updated by frontend
       }));
       
-      // Store in memory for next time
-      messageStorage.set(roomId, messages);
-      console.log('💾 Messages loaded from SQL Server and cached in memory');
+      console.log('📨 Found messages from database:', messages.length);
+      
+      res.json({
+        success: true,
+        messages: messages.map((msg: any) => ({
+          id: msg.id,
+          roomId: parseInt(msg.roomId),
+          senderId: msg.senderId,
+          content: msg.content,
+          type: msg.type || 'text',
+          timestamp: msg.timestamp,
+          senderName: msg.senderName,
+          senderRole: msg.senderRole
+        }))
+      });
+    } else {
+      console.log('📨 No messages in database, falling back to memory cache...');
+      throw new Error('No messages in database');
     }
     
-    console.log('📨 Found messages:', messages.length);
+  } catch (error) {
+    console.error('❌ Error loading messages from database:', error);
+    
+    // Fallback to memory cache
+    console.log('📨 Falling back to memory cache...');
+    let messages = messageStorage.get(roomId) || [];
+    
+    // If no messages in memory, return empty array
+    if (messages.length === 0) {
+      console.log('📨 No messages in memory cache either');
+      messages = [];
+    }
+    
+    console.log('📨 Found messages from cache:', messages.length);
     
     res.json({
       success: true,
       messages: messages.map((msg: any) => ({
-        MessageID: msg.id,
-        RoomID: parseInt(roomId),
-        SenderID: msg.senderId,
-        Content: msg.content,
-        MessageType: msg.type || 'Text',
-        CreatedAt: msg.timestamp
+        id: msg.id,
+        roomId: parseInt(msg.roomId || roomId),
+        senderId: msg.senderId,
+        content: msg.content,
+        type: msg.type || 'text',
+        timestamp: msg.timestamp,
+        senderName: msg.senderName || 'Unknown',
+        senderRole: msg.senderRole || 'Customer'
       }))
-    });
-    
-  } catch (error) {
-    console.error('❌ Error loading messages:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to load messages'
     });
   }
 });
 
-app.post('/api/chat/send', (req, res) => {
-  const { chatId, content, type } = req.body;
-  
-  console.log('Sending message:', { chatId, content, type });
-  
-  const newMessage = {
-    MessageID: Date.now(),
-    RoomID: parseInt(chatId),
-    SenderID: 3, // Mock sender
-    Content: content,
-    MessageType: type || 'Text',
-    CreatedAt: new Date().toISOString()
-  };
-  
-  res.json({
-    success: true,
-    data: newMessage
-  });
+app.post('/api/chat/send', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !activeTokens.has(token)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { chatId, content, type } = req.body;
+    
+    if (!chatId || !content) {
+      return res.status(400).json({ error: 'ChatId and content are required' });
+    }
+    
+    console.log('📤 Sending message:', { chatId, content, type });
+
+    const sql = await getDbConnection();
+    
+    // Get user info
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    const userResult = await sql.query`
+      SELECT UserID FROM Users WHERE Email = ${userEmail}
+    `;
+    
+    if (userResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    
+    // Insert message
+    const messageResult = await sql.query`
+      INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt, IsRead)
+      VALUES (${parseInt(chatId)}, ${userId}, ${content}, ${type || 'text'}, GETDATE(), 0);
+      SELECT SCOPE_IDENTITY() as MessageID;
+    `;
+    
+    const messageId = messageResult.recordset[0].MessageID;
+    
+    // Update last message in chat room
+    await sql.query`
+      UPDATE ChatRooms 
+      SET LastMessage = ${content}, LastMessageAt = GETDATE()
+      WHERE RoomID = ${parseInt(chatId)}
+    `;
+
+    const newMessage = {
+      MessageID: messageId,
+      RoomID: parseInt(chatId),
+      SenderID: userId,
+      Content: content,
+      MessageType: type || 'text',
+      CreatedAt: new Date().toISOString()
+    };
+
+    console.log(`✅ Message sent: ${messageId}`);
+    
+    res.json({
+      success: true,
+      data: newMessage
+    });
+    
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// File upload endpoint
+app.post('/api/chat/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const { conversationId, roomId, senderId, senderName, senderType } = req.body;
+    
+    if (!conversationId && !roomId) {
+      return res.status(400).json({ error: 'conversationId or roomId is required' });
+    }
+
+    const fileUrl = `/uploads/chat-files/${req.file.filename}`;
+    
+    // Save file info to database
+    const sql = await getDbConnection();
+    
+    if (conversationId) {
+      // For conversation-based chat
+      await sql.query`
+        INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt, IsRead)
+        VALUES (${parseInt(conversationId)}, ${parseInt(senderId)}, ${fileUrl}, 'file', GETDATE(), 0);
+      `;
+    } else if (roomId) {
+      // For room-based chat
+      await sql.query`
+        INSERT INTO Messages (RoomID, SenderID, Content, MessageType, CreatedAt, IsRead)
+        VALUES (${parseInt(roomId)}, ${parseInt(senderId)}, ${fileUrl}, 'file', GETDATE(), 0);
+      `;
+    }
+
+    console.log(`📎 File uploaded: ${req.file.filename}`);
+    
+    res.json({
+      success: true,
+      fileUrl: fileUrl,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype
+    });
+    
+  } catch (error) {
+    console.error('❌ File upload error:', error);
+    res.status(500).json({ error: 'Failed to upload file' });
+  }
 });
 
 // =============================================
@@ -2728,49 +2885,6 @@ const requireAdminAuth = (req: any, res: any) => {
 // USERS MANAGEMENT APIs
 // ===========================================
 
-// Get all users (Admin only)
-app.get('/api/admin/users', async (req, res) => {
-  try {
-    const token = requireAdminAuth(req, res);
-    if (!token) return;
-    
-    const sql = await getDbConnection();
-    
-    const result = await sql.query(`
-      SELECT 
-        UserID,
-        Email,
-        FullName,
-        Phone,
-        Address,
-        Status,
-        CreatedAt,
-        CASE 
-          WHEN Email = 'admin@muji.com' THEN 'Admin'
-          WHEN Email = 'agent@muji.com' THEN 'Agent'
-          ELSE 'Customer'
-        END as Role
-      FROM Users
-      ORDER BY CreatedAt DESC
-    `);
-    
-    await sql.close();
-    
-    res.json({
-      success: true,
-      users: result.recordset
-    });
-    
-  } catch (error: any) {
-    console.error('❌ Admin get users error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch users',
-      error: error.message
-    });
-  }
-});
-
 // Create new user (Admin only)
 app.post('/api/admin/users', async (req, res) => {
   try {
@@ -2817,7 +2931,6 @@ app.post('/api/admin/users', async (req, res) => {
     `);
     
     if (existingUser.recordset.length > 0) {
-      await sql.close();
       return res.status(400).json({
         success: false,
         message: 'Email already exists'
@@ -2831,7 +2944,6 @@ app.post('/api/admin/users', async (req, res) => {
     `);
     
     // Close connection
-    await sql.close();
     
     res.json({
       success: true,
@@ -2894,7 +3006,6 @@ app.put('/api/admin/users/:userId', async (req, res) => {
     `);
     
     // Close connection
-    await sql.close();
     
     res.json({
       success: true,
@@ -2949,7 +3060,6 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     `);
     
     if (userResult.recordset.length === 0) {
-      await sql.close();
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -2957,7 +3067,6 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     }
     
     if (userResult.recordset[0].Email === 'admin@muji.com') {
-      await sql.close();
       return res.status(400).json({
         success: false,
         message: 'Cannot delete admin account'
@@ -2970,7 +3079,6 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
     `);
     
     // Close connection
-    await sql.close();
     
     res.json({
       success: true,
@@ -2990,70 +3098,6 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
 // ===========================================
 // ADMIN PRODUCT MANAGEMENT APIs
 // ===========================================
-
-// Get all products (Admin only)
-app.get('/api/admin/products', async (req, res) => {
-  try {
-    // Check admin authentication
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-    
-    const token = authHeader.substring(7);
-    const userEmail = activeTokens.get(token);
-    
-    if (!userEmail || userEmail !== 'admin@muji.com') {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
-    }
-    
-    const sql = require('mssql');
-    const config = {
-      user: 'thien',
-      password: '1909',
-      server: 'localhost',
-      database: 'live_support',
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-      },
-    };
-    
-    await sql.connect(config);
-    
-    const productsResult = await sql.query(`
-      SELECT 
-        p.ProductID,
-        p.ProductName,
-        p.Description,
-        p.Price,
-        p.StockQuantity,
-        p.ImagePath,
-        p.IsActive as Status,
-        p.CreatedAt,
-        c.CategoryName
-      FROM Products p
-      LEFT JOIN Categories c ON p.CategoryID = c.CategoryID
-      ORDER BY p.CreatedAt DESC
-    `);
-    
-    // Close connection
-    await sql.close();
-    
-    res.json({
-      success: true,
-      products: productsResult.recordset
-    });
-    
-  } catch (error: any) {
-    console.error('❌ Admin get products error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch products',
-      error: error.message
-    });
-  }
-});
 
 // Create new product (Admin only)
 app.post('/api/admin/products', async (req, res) => {
@@ -3286,7 +3330,6 @@ app.get('/api/admin/categories', async (req, res) => {
     `);
     
     // Close connection
-    await sql.close();
     
     res.json({
       success: true,
@@ -3384,75 +3427,8 @@ app.post('/api/admin/categories', async (req, res) => {
 // ADMIN ORDER MANAGEMENT APIs
 // ===========================================
 
-// Get all orders (Admin only)
-app.get('/api/admin/orders', async (req, res) => {
-  try {
-    // Check admin authentication
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-    
-    const token = authHeader.substring(7);
-    const userEmail = activeTokens.get(token);
-    
-    if (!userEmail || userEmail !== 'admin@muji.com') {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
-    }
-    
-    const sql = require('mssql');
-    const config = {
-      user: 'thien',
-      password: '1909',
-      server: 'localhost',
-      database: 'live_support',
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-      },
-    };
-    
-    await sql.connect(config);
-    
-    const ordersResult = await sql.query(`
-      SELECT 
-        o.OrderID,
-        o.OrderNumber,
-        o.CustomerID as UserID,
-        o.CreatedAt as OrderDate,
-        o.TotalAmount,
-        o.Status,
-        o.ShippingAddress,
-        o.PaymentMethod,
-        'Standard' as ShippingMethod,
-        o.Notes,
-        o.CreatedAt,
-        u.FullName as CustomerName,
-        u.Email as CustomerEmail
-      FROM Orders o
-      LEFT JOIN Users u ON o.CustomerID = u.UserID
-      ORDER BY o.CreatedAt DESC
-    `);
-    
-    // Close connection
-    await sql.close();
-    
-    res.json({
-      success: true,
-      orders: ordersResult.recordset
-    });
-    
-  } catch (error: any) {
-    console.error('❌ Admin get orders error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch orders',
-      error: error.message
-    });
-  }
-});
-
 // Get order statistics (Admin only) - MUST BE BEFORE /:orderId route
+/*
 app.get('/api/admin/orders/stats', async (req, res) => {
   try {
     // Check admin authentication
@@ -3503,7 +3479,6 @@ app.get('/api/admin/orders/stats', async (req, res) => {
       WHERE CreatedAt >= DATEADD(day, -7, GETDATE())
     `);
     
-    await sql.close();
     
     const stats = statsResult.recordset[0];
     const recentOrders = recentOrdersResult.recordset[0];
@@ -3532,6 +3507,7 @@ app.get('/api/admin/orders/stats', async (req, res) => {
     });
   }
 });
+*/
 
 // Get order details with items (Admin only)
 app.get('/api/admin/orders/:orderId', async (req, res) => {
@@ -4396,6 +4372,894 @@ app.post('/api/conversations/:id/messages', async (req, res) => {
   }
 });
 
+// Get ticket priorities
+app.get('/api/tickets/priorities', async (req, res) => {
+  try {
+    const priorities = [
+      { priorityId: 1, priorityName: 'Low', priorityLevel: 1, colorCode: '#10B981', isActive: true },
+      { priorityId: 2, priorityName: 'Medium', priorityLevel: 2, colorCode: '#F59E0B', isActive: true },
+      { priorityId: 3, priorityName: 'High', priorityLevel: 3, colorCode: '#EF4444', isActive: true }
+    ];
+    res.json(priorities);
+  } catch (error) {
+    console.error('Error getting ticket priorities:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+// Get ticket categories
+app.get('/api/tickets/categories', async (req, res) => {
+  try {
+    const categories = [
+      { categoryId: 1, categoryName: 'Sản phẩm bị lỗi', description: 'Sản phẩm có vấn đề về chất lượng', isActive: true },
+      { categoryId: 2, categoryName: 'Thiếu sản phẩm', description: 'Đơn hàng thiếu sản phẩm', isActive: true },
+      { categoryId: 3, categoryName: 'Nhận sai sản phẩm', description: 'Nhận không đúng sản phẩm đã đặt', isActive: true },
+      { categoryId: 4, categoryName: 'Bao bì bị hỏng', description: 'Bao bì sản phẩm bị hỏng', isActive: true },
+      { categoryId: 5, categoryName: 'Chất lượng kém', description: 'Chất lượng sản phẩm không đạt', isActive: true },
+      { categoryId: 6, categoryName: 'Vấn đề khác', description: 'Các vấn đề khác', isActive: true }
+    ];
+    res.json(categories);
+  } catch (error) {
+    console.error('Error getting ticket categories:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+// Get ticket statuses
+app.get('/api/tickets/statuses', async (req, res) => {
+  try {
+    const statuses = [
+      { statusId: 1, statusName: 'Open', statusDescription: 'Ticket mới được tạo', isActive: true, isClosed: false },
+      { statusId: 2, statusName: 'In Progress', statusDescription: 'Đang xử lý', isActive: true, isClosed: false },
+      { statusId: 3, statusName: 'Resolved', statusDescription: 'Đã giải quyết', isActive: true, isClosed: false },
+      { statusId: 4, statusName: 'Closed', statusDescription: 'Đã đóng', isActive: true, isClosed: true }
+    ];
+    res.json(statuses);
+  } catch (error) {
+    console.error('Error getting ticket statuses:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+// Admin API endpoints (temporary without auth for testing)
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    console.log('🔍 Admin users API called');
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    const usersResult = await sql.query`
+      SELECT 
+        UserID,
+        Email,
+        FullName,
+        Phone,
+        Address,
+        Status,
+        CreatedAt,
+        LastLoginAt,
+        Role
+      FROM Users 
+      ORDER BY CreatedAt DESC
+    `;
+    
+    const users = usersResult.recordset.map((user: any) => ({
+      id: user.UserID,
+      email: user.Email,
+      fullName: user.FullName,
+      phone: user.Phone,
+      address: user.Address,
+      status: user.Status || 'Active',
+      createdAt: user.CreatedAt,
+      lastLoginAt: user.LastLoginAt,
+      role: user.Role
+    }));
+    
+    await sql.close();
+    
+    console.log(`✅ Admin users loaded: ${users.length} users`);
+    res.json({
+      success: true,
+      data: users,
+      total: users.length
+    });
+  } catch (error) {
+    console.error('❌ Error getting admin users:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch users',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+app.get('/api/admin/orders', async (req, res) => {
+  try {
+    console.log('🔍 Admin orders API called');
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+      }
+    };
+    
+    const pool = await sql.connect(config);
+    
+    const ordersResult = await pool.request().query(`
+      SELECT 
+        o.OrderID,
+        o.OrderNumber,
+        o.Status,
+        o.PaymentStatus,
+        o.TotalAmount,
+        o.CreatedAt,
+        o.ShippedAt,
+        o.DeliveredAt,
+        o.CustomerID,
+        u.FullName as CustomerName,
+        u.Email as CustomerEmail
+      FROM Orders o
+      LEFT JOIN Users u ON o.CustomerID = u.UserID
+      ORDER BY o.CreatedAt DESC
+    `);
+    
+    const orders = ordersResult.recordset.map((order: any) => ({
+      id: order.OrderID,
+      orderNumber: order.OrderNumber,
+      status: order.Status,
+      paymentStatus: order.PaymentStatus,
+      totalAmount: order.TotalAmount,
+      createdAt: order.CreatedAt,
+      shippedAt: order.ShippedAt,
+      deliveredAt: order.DeliveredAt,
+      customerId: order.CustomerID,
+      customerName: order.CustomerName,
+      customerEmail: order.CustomerEmail
+    }));
+    
+    await pool.close();
+    
+    console.log(`✅ Admin orders loaded: ${orders.length} orders`);
+    res.json({
+      success: true,
+      data: orders,
+      total: orders.length
+    });
+  } catch (error) {
+    console.error('❌ Error getting admin orders:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+app.get('/api/admin/orders/stats', async (req, res) => {
+  try {
+    console.log('🔍 Admin orders stats API called');
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    await sql.connect(config);
+    
+    // Total orders
+    const totalOrdersResult = await sql.query`SELECT COUNT(*) as total FROM Orders`;
+    const totalOrders = totalOrdersResult.recordset[0]?.total || 0;
+    
+    // Orders this week
+    const weekOrdersResult = await sql.query`
+      SELECT COUNT(*) as total 
+      FROM Orders 
+      WHERE CreatedAt >= DATEADD(week, -1, GETDATE())
+    `;
+    const weekOrders = weekOrdersResult.recordset[0]?.total || 0;
+    
+    // Total revenue
+    const revenueResult = await sql.query`
+      SELECT ISNULL(SUM(TotalAmount), 0) as total 
+      FROM Orders 
+      WHERE PaymentStatus IN ('Paid', 'Completed', 'Delivered')
+    `;
+    const totalRevenue = revenueResult.recordset[0]?.total || 0;
+    
+    // Orders by status
+    const statusResult = await sql.query`
+      SELECT Status, COUNT(*) as count 
+      FROM Orders 
+      GROUP BY Status
+    `;
+    const ordersByStatus = statusResult.recordset?.map((row: any) => ({
+      status: row.Status,
+      count: row.count
+    })) || [];
+    
+    await sql.close();
+    
+    console.log(`✅ Admin orders stats loaded: ${totalOrders} total orders, ${weekOrders} this week, ${totalRevenue} revenue`);
+    res.json({
+      success: true,
+      data: {
+        totalOrders,
+        weekOrders,
+        totalRevenue,
+        ordersByStatus,
+        recentOrders: weekOrders
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting order stats:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch order stats',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+app.get('/api/admin/products', async (req, res) => {
+  try {
+    console.log('🔍 Admin products API called');
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+      }
+    };
+    
+    const pool = await sql.connect(config);
+    
+    const productsResult = await pool.request().query(`
+      SELECT 
+        ProductID,
+        ProductName,
+        Description,
+        Price,
+        StockQuantity,
+        CategoryID,
+        IsInStock,
+        CreatedAt,
+        UpdatedAt
+      FROM Products 
+      ORDER BY CreatedAt DESC
+    `);
+    
+    const products = productsResult.recordset.map((product: any) => ({
+      id: product.ProductID,
+      name: product.ProductName,
+      description: product.Description,
+      price: product.Price,
+      stockQuantity: product.StockQuantity,
+      categoryId: product.CategoryID,
+      status: product.IsInStock ? 'Active' : 'Inactive',
+      createdAt: product.CreatedAt,
+      updatedAt: product.UpdatedAt
+    }));
+    
+    await pool.close();
+    
+    console.log(`✅ Admin products loaded: ${products.length} products`);
+    res.json({
+      success: true,
+      data: products,
+      total: products.length
+    });
+  } catch (error) {
+    console.error('❌ Error getting admin products:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch products',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+app.get('/api/admin/categories', async (req, res) => {
+  try {
+    console.log('🔍 Admin categories API called');
+    
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+      }
+    };
+    
+    const pool = await sql.connect(config);
+    
+    const categoriesResult = await pool.request().query(`
+      SELECT 
+        CategoryID,
+        CategoryName,
+        Description,
+        Status,
+        CreatedAt
+      FROM Categories 
+      ORDER BY CreatedAt DESC
+    `);
+    
+    const categories = categoriesResult.recordset.map((category: any) => ({
+      id: category.CategoryID,
+      name: category.CategoryName,
+      description: category.Description,
+      status: category.Status,
+      createdAt: category.CreatedAt
+    }));
+    
+    await pool.close();
+    
+    console.log(`✅ Admin categories loaded: ${categories.length} categories`);
+    res.json({
+      success: true,
+      data: categories,
+      total: categories.length
+    });
+  } catch (error) {
+    console.error('❌ Error getting admin categories:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch categories',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Test endpoint
+app.get('/api/test-completed', (req, res) => {
+  res.json({ success: true, message: 'Test endpoint working' });
+});
+
+// Simple test endpoint for orders
+app.get('/api/orders/test', async (req, res) => {
+  try {
+    console.log('🔍 Test Orders API: Request received');
+    
+    // Get user from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
+    
+    // Connect to database
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    const pool = await sql.connect(config);
+    
+    // Get user ID
+    const userResult = await pool.request()
+      .input('email', sql.NVarChar, userEmail)
+      .query('SELECT UserID FROM Users WHERE Email = @email');
+    
+    if (userResult.recordset.length === 0) {
+      await pool.close();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    
+    // Get all orders for this user
+    const ordersResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT 
+          OrderID as id,
+          OrderNumber as orderNumber,
+          Status,
+          TotalAmount as totalAmount
+        FROM Orders 
+        WHERE CustomerID = @userId 
+        ORDER BY CreatedAt DESC
+      `);
+    
+    await pool.close();
+    
+    const orders = ordersResult.recordset.map((order: any) => ({
+      id: order.id,
+      orderNumber: order.orderNumber,
+      status: order.Status,
+      totalAmount: order.totalAmount
+    }));
+    
+    console.log(`✅ Test Orders API: Found ${orders.length} orders for user ${userEmail}`);
+    
+    res.json({
+      success: true,
+      orders: orders,
+      userEmail: userEmail,
+      userId: userId
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Test Orders API Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/orders/completed - Get user's completed orders for ticket creation
+app.get('/api/orders/completed', async (req, res) => {
+  try {
+    console.log('🔍 Completed Orders API: Request received');
+    console.log('🔍 Completed Orders API: URL:', req.url);
+    console.log('🔍 Completed Orders API: Method:', req.method);
+    console.log('🔍 Completed Orders API: Headers:', req.headers);
+    
+    // Get user from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    
+    const token = authHeader.substring(7);
+    const userEmail = activeTokens.get(token);
+    
+    if (!userEmail) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
+    
+    // Connect to database
+    const sql = require('mssql');
+    const config = {
+      user: 'thien',
+      password: '1909',
+      server: 'localhost',
+      database: 'live_support',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    };
+    
+    const pool = await sql.connect(config);
+    
+    // Get user ID
+    const userResult = await pool.request()
+      .input('email', sql.NVarChar, userEmail)
+      .query('SELECT UserID FROM Users WHERE Email = @email');
+    
+    if (userResult.recordset.length === 0) {
+      await pool.close();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    const userId = userResult.recordset[0].UserID;
+    
+    // Get completed orders (Delivered status) that don't have tickets yet
+    const ordersResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT 
+          o.OrderID as id,
+          o.OrderNumber as orderNumber,
+          o.TotalAmount as totalAmount,
+          o.Status,
+          o.PaymentStatus,
+          o.CreatedAt as createdAt
+        FROM Orders o
+        WHERE o.CustomerID = @userId 
+        AND o.Status IN ('Delivered', 'Completed')
+        AND NOT EXISTS (
+          SELECT 1 FROM Tickets t 
+          WHERE t.OrderID = o.OrderID
+        )
+        ORDER BY o.CreatedAt DESC
+      `);
+    
+    await pool.close();
+    
+    const orders = ordersResult.recordset.map((order: any) => ({
+      id: order.id,
+      orderNumber: order.orderNumber,
+      totalAmount: order.totalAmount,
+      status: order.Status,
+      paymentStatus: order.PaymentStatus,
+      createdAt: order.createdAt
+    }));
+    
+    console.log(`✅ Completed Orders API: Found ${orders.length} completed orders for user ${userEmail}`);
+    
+    res.json({
+      success: true,
+      orders: orders
+    });
+    
+  } catch (error: any) {
+    console.error('❌ Completed Orders API Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: error.message 
+    });
+  }
+});
+
+// Agent Dashboard APIs
+// GET /api/agent/tickets - Get tickets for agent dashboard
+app.get('/api/agent/tickets', async (req, res) => {
+  try {
+    console.log('🔍 Agent tickets API called');
+    
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const sql = await getDbConnection();
+
+    // Get all tickets with customer info and agent info
+    const ticketsResult = await sql.query`
+      SELECT 
+        t.TicketID,
+        t.Title,
+        t.Description,
+        t.Status,
+        t.Priority,
+        t.CreatedAt,
+        t.UpdatedAt,
+        t.CustomerID,
+        t.AgentID,
+        u.Email as CustomerEmail,
+        u.FullName as CustomerName,
+        u.Phone as CustomerPhone,
+        a.FullName as AgentName,
+        a.Email as AgentEmail
+      FROM Tickets t
+      LEFT JOIN Users u ON t.CustomerID = u.UserID
+      LEFT JOIN Users a ON t.AgentID = a.UserID
+      ORDER BY t.CreatedAt DESC
+    `;
+
+    console.log(`✅ Agent tickets API: Found ${ticketsResult.recordset.length} tickets`);
+    
+    // Transform data to match frontend expectations
+    const tickets = ticketsResult.recordset.map((ticket: any) => ({
+      ticketId: ticket.TicketID,
+      ticketNumber: `TKT-${ticket.TicketID.toString().padStart(6, '0')}`,
+      title: ticket.Title,
+      description: ticket.Description,
+      status: ticket.Status || 'Open',
+      priority: ticket.Priority || 'Medium',
+      createdAt: ticket.CreatedAt,
+      updatedAt: ticket.UpdatedAt,
+      customerId: ticket.CustomerID,
+      customerName: ticket.CustomerName || 'N/A',
+      customerEmail: ticket.CustomerEmail || 'N/A',
+      customerPhone: ticket.CustomerPhone || 'N/A',
+      agentId: ticket.AgentID,
+      agentName: ticket.AgentName || 'Chưa phân công',
+      agentEmail: ticket.AgentEmail || 'N/A'
+    }));
+    
+    res.json({
+      success: true,
+      tickets: tickets
+    });
+
+  } catch (error: any) {
+    console.error('❌ Agent tickets API error:', error);
+    res.status(500).json({ error: 'Lỗi server khi tải tickets' });
+  }
+});
+
+// GET /api/agent/chat-rooms - Get chat rooms for agent dashboard
+app.get('/api/agent/chat-rooms', async (req, res) => {
+  try {
+    console.log('🔍 Agent chat rooms API called');
+    
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const sql = await getDbConnection();
+
+    // Get chat rooms with customer info and ticket info
+    const chatRoomsResult = await sql.query`
+      SELECT 
+        cr.RoomID,
+        cr.RoomName,
+        cr.IsActive,
+        cr.CreatedAt,
+        cr.UpdatedAt,
+        cr.CustomerID,
+        cr.AgentID,
+        cr.TicketID,
+        cr.LastMessage,
+        cr.LastMessageAt,
+        cr.AverageRating,
+        cr.TotalRatings,
+        u.FullName as CustomerName,
+        u.Email as CustomerEmail,
+        u.Phone as CustomerPhone,
+        a.FullName as AgentName,
+        a.Email as AgentEmail,
+        t.Title as TicketTitle,
+        t.Status as TicketStatus,
+        t.Priority as TicketPriority
+      FROM ChatRooms cr
+      LEFT JOIN Users u ON cr.CustomerID = u.UserID
+      LEFT JOIN Users a ON cr.AgentID = a.UserID
+      LEFT JOIN Tickets t ON cr.TicketID = t.TicketID
+      WHERE cr.IsActive = 1
+      ORDER BY cr.CreatedAt DESC
+    `;
+
+    console.log(`✅ Agent chat rooms API: Found ${chatRoomsResult.recordset.length} active chat rooms`);
+    
+    // Transform data to match frontend expectations
+    const chatRooms = chatRoomsResult.recordset.map((room: any) => ({
+      id: room.RoomID,
+      roomId: room.RoomID,
+      roomName: room.RoomName,
+      isActive: room.IsActive,
+      createdAt: room.CreatedAt,
+      updatedAt: room.UpdatedAt,
+      customerId: room.CustomerID,
+      customerName: room.CustomerName || 'N/A',
+      customerEmail: room.CustomerEmail || 'N/A',
+      customerPhone: room.CustomerPhone || 'N/A',
+      agentId: room.AgentID,
+      agentName: room.AgentName || 'Chưa phân công',
+      agentEmail: room.AgentEmail || 'N/A',
+      ticketId: room.TicketID,
+      ticketTitle: room.TicketTitle || 'N/A',
+      ticketStatus: room.TicketStatus || 'Open',
+      ticketPriority: room.TicketPriority || 'Medium',
+      lastMessage: room.LastMessage || '',
+      lastMessageAt: room.LastMessageAt,
+      averageRating: room.AverageRating || 0,
+      totalRatings: room.TotalRatings || 0,
+      unreadCount: 0 // Will be calculated separately if needed
+    }));
+    
+    res.json({
+      success: true,
+      chatRooms: chatRooms
+    });
+
+  } catch (error: any) {
+    console.error('❌ Agent chat rooms API error:', error);
+    res.status(500).json({ error: 'Lỗi server khi tải chat rooms' });
+  }
+});
+
+// POST /api/agent/receive-ticket - Agent receives a ticket and creates chat room
+app.post('/api/agent/receive-ticket', async (req, res) => {
+  try {
+    console.log('🔍 Agent receive ticket API called');
+    
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const userEmail = activeTokens.get(token);
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Token không hợp lệ' });
+    }
+
+    const { ticketId } = req.body;
+    if (!ticketId) {
+      return res.status(400).json({ error: 'Ticket ID là bắt buộc' });
+    }
+
+    const sql = await getDbConnection();
+
+    // Get agent info
+    const agentResult = await sql.query`
+      SELECT UserID, FullName, Email FROM Users WHERE Email = ${userEmail}
+    `;
+    
+    if (agentResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Agent không tồn tại' });
+    }
+    
+    const agent = agentResult.recordset[0];
+
+    // Get ticket info
+    const ticketResult = await sql.query`
+      SELECT 
+        t.TicketID,
+        t.Title,
+        t.Description,
+        t.Status,
+        t.Priority,
+        t.CustomerID,
+        u.FullName as CustomerName,
+        u.Email as CustomerEmail,
+        u.Phone as CustomerPhone
+      FROM Tickets t
+      LEFT JOIN Users u ON t.CustomerID = u.UserID
+      WHERE t.TicketID = ${ticketId}
+    `;
+    
+    if (ticketResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Ticket không tồn tại' });
+    }
+    
+    const ticket = ticketResult.recordset[0];
+
+    // Check if ticket is already assigned to another agent
+    if (ticket.Status === 'In Progress' && ticket.AgentID && ticket.AgentID !== agent.UserID) {
+      return res.status(400).json({ error: 'Ticket đã được phân công cho agent khác' });
+    }
+
+    // Update ticket status and assign to agent
+    await sql.query`
+      UPDATE Tickets 
+      SET Status = 'In Progress', 
+          AgentID = ${agent.UserID},
+          UpdatedAt = GETDATE()
+      WHERE TicketID = ${ticketId}
+    `;
+
+    // Check if chat room already exists for this ticket
+    const existingRoomResult = await sql.query`
+      SELECT RoomID FROM ChatRooms WHERE TicketID = ${ticketId} AND IsActive = 1
+    `;
+    
+    let roomId;
+    if (existingRoomResult.recordset.length > 0) {
+      // Update existing room with agent info
+      roomId = existingRoomResult.recordset[0].RoomID;
+      await sql.query`
+        UPDATE ChatRooms 
+        SET AgentID = ${agent.UserID}, UpdatedAt = GETDATE()
+        WHERE RoomID = ${roomId}
+      `;
+      console.log(`✅ Updated existing chat room ${roomId} for ticket ${ticketId}`);
+    } else {
+      // Create new chat room
+      const roomResult = await sql.query`
+        INSERT INTO ChatRooms (
+          TicketID, 
+          RoomName, 
+          CustomerID, 
+          AgentID, 
+          IsActive, 
+          CreatedAt, 
+          UpdatedAt
+        )
+        OUTPUT INSERTED.RoomID
+        VALUES (
+          ${ticketId}, 
+          ${`Chat hỗ trợ - ${ticket.Title}`}, 
+          ${ticket.CustomerID}, 
+          ${agent.UserID}, 
+          1, 
+          GETDATE(), 
+          GETDATE()
+        )
+      `;
+      
+      roomId = roomResult.recordset[0].RoomID;
+      console.log(`✅ Created new chat room ${roomId} for ticket ${ticketId}`);
+    }
+
+    // Add initial message to chat room
+    await sql.query`
+      INSERT INTO Messages (
+        RoomID, 
+        SenderID, 
+        Content, 
+        MessageType, 
+        IsRead, 
+        CreatedAt
+      )
+      VALUES (
+        ${roomId}, 
+        ${agent.UserID}, 
+        ${`Agent ${agent.FullName} đã nhận ticket và sẵn sàng hỗ trợ bạn.`}, 
+        'system', 
+        0, 
+        GETDATE()
+      )
+    `;
+
+    console.log(`✅ Agent ${agent.FullName} received ticket ${ticketId} and created/updated chat room ${roomId}`);
+    
+    res.json({
+      success: true,
+      message: 'Nhận ticket thành công',
+      data: {
+        ticketId: ticketId,
+        roomId: roomId,
+        agentName: agent.FullName,
+        customerName: ticket.CustomerName,
+        ticketTitle: ticket.Title
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ Agent receive ticket API error:', error);
+    res.status(500).json({ error: 'Lỗi server khi nhận ticket' });
+  }
+});
+
 server.listen(port, async () => {
   // Initialize database connection
   try {
@@ -4409,6 +5273,274 @@ server.listen(port, async () => {
     console.error('❌ Failed to initialize database connection:', error);
   }
   
+// ===========================================
+// RATING MANAGEMENT API ENDPOINTS
+// ===========================================
+
+// Submit chat rating
+app.post('/api/chat/rating', async (req, res) => {
+  try {
+    console.log('🔍 Submitting chat rating...');
+    console.log('📝 Request body:', req.body);
+    const { roomId, rating, comment } = req.body;
+    
+    console.log('📝 Parsed data:', { roomId, rating, comment });
+    
+    if (!roomId || !rating) {
+      console.log('❌ Missing required fields:', { roomId, rating });
+      return res.status(400).json({
+        success: false,
+        error: 'Thiếu thông tin bắt buộc (roomId, rating)'
+      });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating phải từ 1 đến 5'
+      });
+    }
+
+    const sql = await getConnection();
+    
+    // Get user ID from token
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Token không hợp lệ'
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    // Get user ID from UserTokens table
+    const tokenResult = await sql.query`
+      SELECT ut.UserID, ut.ExpiresAt, ut.IsActive, u.FullName
+      FROM UserTokens ut
+      INNER JOIN Users u ON ut.UserID = u.UserID
+      WHERE ut.Token = ${token} AND ut.IsActive = 1 AND ut.ExpiresAt > GETDATE()
+    `;
+
+    if (tokenResult.recordset.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Token không hợp lệ hoặc đã hết hạn'
+      });
+    }
+
+    const userId = tokenResult.recordset[0].UserID;
+    const userName = tokenResult.recordset[0].FullName;
+    
+    console.log(`✅ Valid token for user ${userId} (${userName})`);
+
+    // Check if user already rated this room
+    const existingRating = await sql.query`
+      SELECT RatingID FROM ChatRatings 
+      WHERE RoomID = ${parseInt(roomId)} AND UserID = ${userId}
+    `;
+
+    if (existingRating.recordset.length > 0) {
+      // Update existing rating
+      await sql.query`
+        UPDATE ChatRatings 
+        SET Rating = ${rating}, Comment = ${comment || ''}, UpdatedAt = GETDATE()
+        WHERE RoomID = ${parseInt(roomId)} AND UserID = ${userId}
+      `;
+      console.log('✅ Updated existing rating');
+    } else {
+      // Insert new rating
+      await sql.query`
+        INSERT INTO ChatRatings (RoomID, UserID, Rating, Comment, CreatedAt, UpdatedAt)
+        VALUES (${parseInt(roomId)}, ${userId}, ${rating}, ${comment || ''}, GETDATE(), GETDATE())
+      `;
+      console.log('✅ Created new rating');
+    }
+
+    // Update room statistics
+    await sql.query`
+      UPDATE ChatRooms 
+      SET 
+        AverageRating = (
+          SELECT AVG(CAST(Rating AS DECIMAL(3,2))) 
+          FROM ChatRatings 
+          WHERE RoomID = ${parseInt(roomId)}
+        ),
+        TotalRatings = (
+          SELECT COUNT(*) 
+          FROM ChatRatings 
+          WHERE RoomID = ${parseInt(roomId)}
+        )
+      WHERE RoomID = ${parseInt(roomId)}
+    `;
+
+    console.log('✅ Rating submitted successfully');
+
+    res.json({
+      success: true,
+      message: 'Đánh giá đã được gửi thành công'
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error submitting rating:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Lỗi server khi gửi đánh giá',
+      details: error.message
+    });
+  }
+});
+
+// Get all ratings for management
+app.get('/api/chat/ratings', async (req, res) => {
+  try {
+    console.log('🔍 Getting all ratings...');
+    const sql = await getConnection();
+    
+    const result = await sql.query`
+      SELECT 
+        cr.RatingID,
+        cr.RoomID,
+        cr.UserID,
+        cr.Rating,
+        cr.Comment,
+        cr.CreatedAt,
+        u.FullName as CustomerName,
+        u.Role,
+        cr2.RoomName
+      FROM ChatRatings cr
+      LEFT JOIN Users u ON cr.UserID = u.UserID
+      LEFT JOIN ChatRooms cr2 ON cr.RoomID = cr2.RoomID
+      ORDER BY cr.CreatedAt DESC
+    `;
+
+    console.log('✅ SQL query executed, records found:', result.recordset.length);
+
+    const ratings = result.recordset.map(rating => ({
+      ratingId: rating.RatingID.toString(),
+      roomId: rating.RoomID.toString(),
+      customerId: rating.UserID.toString(),
+      rating: rating.Rating,
+      comment: rating.Comment || '',
+      createdAt: rating.CreatedAt,
+      customerName: rating.CustomerName || 'Unknown',
+      roomName: rating.RoomName || `Chat ${rating.RoomID}`
+    }));
+
+    console.log('✅ Mapped ratings:', ratings.length);
+
+    res.json({
+      success: true,
+      ratings
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error getting ratings:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Lỗi server khi lấy danh sách đánh giá',
+      details: error.message 
+    });
+  }
+});
+
+// Get rating statistics
+app.get('/api/chat/rating-stats', async (req, res) => {
+  try {
+    console.log('🔍 Getting rating statistics...');
+    const sql = await getConnection();
+    
+    const result = await sql.query`
+      SELECT 
+        AVG(CAST(Rating AS FLOAT)) as AverageRating,
+        COUNT(*) as TotalRatings,
+        SUM(CASE WHEN Rating = 1 THEN 1 ELSE 0 END) as Rating1,
+        SUM(CASE WHEN Rating = 2 THEN 1 ELSE 0 END) as Rating2,
+        SUM(CASE WHEN Rating = 3 THEN 1 ELSE 0 END) as Rating3,
+        SUM(CASE WHEN Rating = 4 THEN 1 ELSE 0 END) as Rating4,
+        SUM(CASE WHEN Rating = 5 THEN 1 ELSE 0 END) as Rating5
+      FROM ChatRatings
+    `;
+
+    console.log('✅ Stats query executed');
+    const stats = result.recordset[0];
+    
+    const ratingStats = {
+      averageRating: Math.round((stats.AverageRating || 0) * 10) / 10,
+      totalRatings: stats.TotalRatings || 0,
+      ratingDistribution: {
+        1: stats.Rating1 || 0,
+        2: stats.Rating2 || 0,
+        3: stats.Rating3 || 0,
+        4: stats.Rating4 || 0,
+        5: stats.Rating5 || 0
+      }
+    };
+
+    console.log('✅ Rating stats calculated:', ratingStats);
+
+    res.json({
+      success: true,
+      stats: ratingStats
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error getting rating stats:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Lỗi server khi lấy thống kê đánh giá',
+      details: error.message 
+    });
+  }
+});
+
+// Get room rating stats
+app.get('/api/chat/rating/:roomId/stats', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    
+    const sql = await getConnection();
+    const result = await sql.query`
+      SELECT 
+        AVG(CAST(Rating AS FLOAT)) as AverageRating,
+        COUNT(*) as TotalRatings,
+        SUM(CASE WHEN Rating = 1 THEN 1 ELSE 0 END) as Rating1,
+        SUM(CASE WHEN Rating = 2 THEN 1 ELSE 0 END) as Rating2,
+        SUM(CASE WHEN Rating = 3 THEN 1 ELSE 0 END) as Rating3,
+        SUM(CASE WHEN Rating = 4 THEN 1 ELSE 0 END) as Rating4,
+        SUM(CASE WHEN Rating = 5 THEN 1 ELSE 0 END) as Rating5
+      FROM ChatRatings 
+      WHERE RoomID = ${parseInt(roomId)}
+    `;
+
+    const stats = result.recordset[0];
+    
+    const ratingStats = {
+      averageRating: Math.round((stats.AverageRating || 0) * 10) / 10,
+      totalRatings: stats.TotalRatings || 0,
+      ratingDistribution: {
+        1: stats.Rating1 || 0,
+        2: stats.Rating2 || 0,
+        3: stats.Rating3 || 0,
+        4: stats.Rating4 || 0,
+        5: stats.Rating5 || 0
+      }
+    };
+
+    res.json({
+      success: true,
+      data: {
+        roomId,
+        stats: ratingStats
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting rating stats:', error);
+    res.status(500).json({ error: 'Lỗi server khi lấy thống kê đánh giá' });
+  }
+});
+
   console.log(`✅ Server running on port ${port}`);
   console.log(`🔌 Socket.IO available at ws://localhost:${port}`);
   console.log(`📡 Health check: http://localhost:${port}/health`);

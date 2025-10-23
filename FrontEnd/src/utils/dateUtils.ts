@@ -1,7 +1,11 @@
 // Date utility functions with error handling
 
-export const formatDate = (dateString: string | Date): string => {
+export const formatDate = (dateString: string | Date | null | undefined): string => {
   try {
+    if (!dateString) {
+      return 'Không xác định';
+    }
+    
     const date = typeof dateString === 'string' ? new Date(dateString) : dateString;
     
     if (isNaN(date.getTime())) {

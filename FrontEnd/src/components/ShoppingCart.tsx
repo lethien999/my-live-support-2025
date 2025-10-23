@@ -89,13 +89,13 @@ const ShoppingCart: React.FC<ShoppingCartProps> = ({ isOpen, onClose }) => {
       const data = await response.json();
       console.log('🛒 ShoppingCart: API response:', data);
       
-      if (data.success && Array.isArray(data.items)) {
-        setCartItems(data.items);
-        console.log('🛒 ShoppingCart: Loaded', data.items.length, 'items');
+      if (data.success && Array.isArray(data.cartItems)) {
+        setCartItems(data.cartItems);
+        console.log('🛒 ShoppingCart: Loaded', data.cartItems.length, 'items');
       } else {
         setCartItems([]);
         console.log('🛒 ShoppingCart: No items or invalid response');
-        console.log('🛒 ShoppingCart: Expected data.items but got:', Object.keys(data));
+        console.log('🛒 ShoppingCart: Expected data.cartItems but got:', Object.keys(data));
       }
       
     } catch (error) {

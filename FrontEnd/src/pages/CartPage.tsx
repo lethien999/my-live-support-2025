@@ -67,8 +67,8 @@ const CartPage: React.FC = () => {
 
       const data = await response.json();
       
-      if (data.success && data.items) {
-        setCartItems(data.items);
+      if (data.success && data.cartItems) {
+        setCartItems(data.cartItems);
       } else {
         setCartItems([]);
       }

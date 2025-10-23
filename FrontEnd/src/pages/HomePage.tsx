@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getApiUrl, API_CONFIG } from '../config/api';
+import { navigateTo } from '../utils/navigation';
 // import { mockCategories, mockProducts } from '../data/mockData';
 
 const HomePage: React.FC = () => {
@@ -80,8 +81,7 @@ const HomePage: React.FC = () => {
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center' }}>
             <button
               onClick={() => {
-                window.history.pushState({}, '', '/products');
-                window.dispatchEvent(new PopStateEvent('popstate'));
+                navigateTo('/products');
               }}
               style={{
                 padding: '15px 30px',
@@ -107,8 +107,7 @@ const HomePage: React.FC = () => {
             </button>
             <button
               onClick={() => {
-                window.history.pushState({}, '', '/chat');
-                window.dispatchEvent(new PopStateEvent('popstate'));
+                navigateTo('/customer-chat');
               }}
               style={{
                 padding: '15px 30px',
@@ -158,8 +157,7 @@ const HomePage: React.FC = () => {
               <div
                 key={category.CategoryID}
                 onClick={() => {
-                  window.history.pushState({}, '', `/products?category=${category.CategoryID}`);
-                  window.dispatchEvent(new PopStateEvent('popstate'));
+                  navigateTo(`/products?category=${category.CategoryID}`);
                 }}
                 style={{
                   backgroundColor: 'white',
@@ -231,8 +229,7 @@ const HomePage: React.FC = () => {
               <div
                 key={product.ProductID}
                 onClick={() => {
-                  window.history.pushState({}, '', `/product/${product.ProductID}`);
-                  window.dispatchEvent(new PopStateEvent('popstate'));
+                  navigateTo(`/product/${product.ProductID}`);
                 }}
                 style={{
                   backgroundColor: 'white',

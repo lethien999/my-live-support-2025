@@ -68,8 +68,8 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
     try {
       setLoading(true);
       
-      // Load user's completed orders
-      const ordersResponse = await fetch(`${getApiUrl('/api/orders/completed')}`, {
+      // Load user's orders and filter completed ones without tickets
+      const ordersResponse = await fetch(`${getApiUrl('/api/orders')}`, {
         headers: {
           'Authorization': `Bearer ${await AuthChatService.getToken()}`,
           'Content-Type': 'application/json'
@@ -78,7 +78,20 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
       
       if (ordersResponse.ok) {
         const ordersData = await ordersResponse.json();
-        setOrders(ordersData.orders || []);
+        const allOrders = ordersData.data || [];
+        
+        // Filter completed orders (Delivered status)
+        const completedOrders = allOrders.filter((order: any) => 
+          order.Status === 'Delivered' || order.Status === 'Completed'
+        );
+        
+        console.log('🔍 CreateTicketModal: All orders:', allOrders.length);
+        console.log('🔍 CreateTicketModal: Completed orders:', completedOrders.length);
+        console.log('🔍 CreateTicketModal: Completed orders data:', completedOrders);
+        
+        // TODO: Filter out orders that already have tickets
+        // For now, show all completed orders
+        setOrders(completedOrders);
       }
       
       // Load categories and priorities
@@ -99,51 +112,51 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
   };
 
   const generateTitleSuggestions = () => {
-    const selectedOrder = orders.find(o => o.orderId.toString() === formData.orderId);
+    const selectedOrder = orders.find(o => o.OrderID.toString() === formData.orderId);
     const suggestions: string[] = [];
     
     if (selectedOrder && formData.issueType) {
       switch (formData.issueType) {
         case 'product-defect':
           suggestions.push(
-            `Sản phẩm lỗi trong đơn hàng #${selectedOrder.orderNumber}`,
-            `Hàng hóa bị hỏng khi nhận từ đơn #${selectedOrder.orderNumber}`,
-            `Sản phẩm không đúng mô tả trong đơn ${selectedOrder.orderNumber}`
+            `Sản phẩm lỗi trong đơn hàng #${selectedOrder.OrderNumber}`,
+            `Hàng hóa bị hỏng khi nhận từ đơn #${selectedOrder.OrderNumber}`,
+            `Sản phẩm không đúng mô tả trong đơn ${selectedOrder.OrderNumber}`
           );
           break;
         case 'missing-item':
           suggestions.push(
-            `Thiếu sản phẩm trong đơn hàng #${selectedOrder.orderNumber}`,
-            `Không nhận đủ hàng từ đơn ${selectedOrder.orderNumber}`,
-            `Sản phẩm bị thiếu trong đơn #${selectedOrder.orderNumber}`
+            `Thiếu sản phẩm trong đơn hàng #${selectedOrder.OrderNumber}`,
+            `Không nhận đủ hàng từ đơn ${selectedOrder.OrderNumber}`,
+            `Sản phẩm bị thiếu trong đơn #${selectedOrder.OrderNumber}`
           );
           break;
         case 'wrong-item':
           suggestions.push(
-            `Nhận sai sản phẩm trong đơn #${selectedOrder.orderNumber}`,
-            `Hàng hóa không đúng với đơn hàng ${selectedOrder.orderNumber}`,
-            `Sản phẩm khác với đã đặt trong đơn #${selectedOrder.orderNumber}`
+            `Nhận sai sản phẩm trong đơn #${selectedOrder.OrderNumber}`,
+            `Hàng hóa không đúng với đơn hàng ${selectedOrder.OrderNumber}`,
+            `Sản phẩm khác với đã đặt trong đơn #${selectedOrder.OrderNumber}`
           );
           break;
         case 'damaged-package':
           suggestions.push(
-            `Bao bì bị hỏng đơn hàng #${selectedOrder.orderNumber}`,
-            `Đóng gói không cẩn thận đơn ${selectedOrder.orderNumber}`,
-            `Hộp đựng bị vỡ trong đơn #${selectedOrder.orderNumber}`
+            `Bao bì bị hỏng đơn hàng #${selectedOrder.OrderNumber}`,
+            `Đóng gói không cẩn thận đơn ${selectedOrder.OrderNumber}`,
+            `Hộp đựng bị vỡ trong đơn #${selectedOrder.OrderNumber}`
           );
           break;
         case 'quality-issue':
           suggestions.push(
-            `Chất lượng sản phẩm kém đơn #${selectedOrder.orderNumber}`,
-            `Hàng hóa không đạt chất lượng đơn ${selectedOrder.orderNumber}`,
-            `Sản phẩm có vấn đề chất lượng đơn #${selectedOrder.orderNumber}`
+            `Chất lượng sản phẩm kém đơn #${selectedOrder.OrderNumber}`,
+            `Hàng hóa không đạt chất lượng đơn ${selectedOrder.OrderNumber}`,
+            `Sản phẩm có vấn đề chất lượng đơn #${selectedOrder.OrderNumber}`
           );
           break;
         default:
           suggestions.push(
-            `Vấn đề với đơn hàng #${selectedOrder.orderNumber}`,
-            `Cần hỗ trợ đơn ${selectedOrder.orderNumber}`,
-            `Yêu cầu xử lý đơn #${selectedOrder.orderNumber}`
+            `Vấn đề với đơn hàng #${selectedOrder.OrderNumber}`,
+            `Cần hỗ trợ đơn ${selectedOrder.OrderNumber}`,
+            `Yêu cầu xử lý đơn #${selectedOrder.OrderNumber}`
           );
       }
     }
@@ -221,8 +234,6 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
         body: JSON.stringify(ticketData)
       });
       
-      const result = await response.json();
-      
       if (!response.ok) {
         const errorData = await response.json();
         if (response.status === 409) {
@@ -233,6 +244,8 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
         }
         return;
       }
+      
+      const result = await response.json();
       
       if (result.success) {
         console.log('✅ Ticket created successfully:', result);
@@ -427,8 +440,8 @@ const CreateTicketModal: React.FC<CreateTicketModalProps> = ({ isOpen, onClose, 
               >
                 <option value="">-- Chọn đơn hàng --</option>
                 {orders.map(order => (
-                  <option key={order.orderId} value={order.orderId}>
-                    Đơn #{order.orderNumber} - {formatDate(order.orderDate)} - {formatCurrency(order.totalAmount)}
+                  <option key={order.OrderID} value={order.OrderID}>
+                    Đơn #{order.OrderNumber} - {formatDate(order.CreatedAt)} - {formatCurrency(order.TotalAmount)}
                   </option>
                 ))}
               </select>

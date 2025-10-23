@@ -43,41 +43,48 @@ export class TokenService {
 
   // Create token in database
   static async createToken(userId: number, tokenType: 'access' | 'refresh', expiresInMinutes: number = 60): Promise<string> {
-    const sql = await getSQLServerConnection();
+    const pool = await getSQLServerConnection();
     const token = this.generateToken();
     const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1000);
 
-    await sql.query`
-      INSERT INTO UserTokens (UserID, Token, TokenType, ExpiresAt, IsActive)
-      VALUES (${userId}, ${token}, ${tokenType}, ${expiresAt}, 1)
-    `;
-
-    return token;
+    try {
+      await pool.request().query(`
+        INSERT INTO UserTokens (UserID, Token, TokenType, ExpiresAt, IsActive)
+        VALUES (${userId}, '${token}', '${tokenType}', '${expiresAt.toISOString()}', 1)
+      `);
+      return token;
+    } finally {
+      await pool.close();
+    }
   }
 
   // Validate token from database
   static async validateToken(token: string): Promise<{ isValid: boolean; userId?: number; userEmail?: string }> {
-    const sql = await getSQLServerConnection();
+    const pool = await getSQLServerConnection();
     
-    const result = await sql.query`
-      SELECT ut.UserID, ut.Token, ut.ExpiresAt, ut.IsActive, u.Email
-      FROM UserTokens ut
-      INNER JOIN Users u ON ut.UserID = u.UserID
-      WHERE ut.Token = ${token} 
-        AND ut.IsActive = 1 
-        AND ut.ExpiresAt > GETDATE()
-    `;
+    try {
+      const result = await pool.request().query(`
+        SELECT ut.UserID, ut.Token, ut.ExpiresAt, ut.IsActive, u.Email
+        FROM UserTokens ut
+        INNER JOIN Users u ON ut.UserID = u.UserID
+        WHERE ut.Token = '${token}' 
+          AND ut.IsActive = 1 
+          AND ut.ExpiresAt > GETDATE()
+      `);
 
-    if (result.recordset.length === 0) {
-      return { isValid: false };
+      if (result.recordset.length === 0) {
+        return { isValid: false };
+      }
+
+      const tokenData = result.recordset[0];
+      return {
+        isValid: true,
+        userId: tokenData.UserID,
+        userEmail: tokenData.Email
+      };
+    } finally {
+      await pool.close();
     }
-
-    const tokenData = result.recordset[0];
-    return {
-      isValid: true,
-      userId: tokenData.UserID,
-      userEmail: tokenData.Email
-    };
   }
 
   // Revoke token (logout)

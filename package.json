@@ -1,8 +1,47 @@
 {
-  "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "socket.io": "^4.8.1"
+  "name": "live-support-system",
+  "version": "1.0.0",
+  "description": "A comprehensive live support system with real-time chat, ticket management, and rating functionality",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd BackEnd && npm run dev",
+    "dev:frontend": "cd FrontEnd && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd BackEnd && npm run build",
+    "build:frontend": "cd FrontEnd && npm run build",
+    "start": "cd BackEnd && npm start",
+    "install:all": "npm install && cd BackEnd && npm install && cd ../FrontEnd && npm install",
+    "clean": "rimraf node_modules BackEnd/node_modules FrontEnd/node_modules",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "live-support",
+    "chat",
+    "real-time",
+    "ticket-management",
+    "rating-system",
+    "react",
+    "nodejs",
+    "typescript",
+    "socket.io"
+  ],
+  "author": "Live Support Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-username/live-support-system.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/live-support-system/issues"
+  },
+  "homepage": "https://github.com/your-username/live-support-system#readme",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "rimraf": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   }
 }

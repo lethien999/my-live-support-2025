@@ -22,6 +22,9 @@ const TicketPageNew: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  
+  // Debug log for modal state
+  console.log('🔍 Modal state:', { showDetailsModal, selectedTicket: selectedTicket?.ticketNumber });
   const [filters, setFilters] = useState({
     status: '',
     priority: '',
@@ -32,11 +35,18 @@ const TicketPageNew: React.FC = () => {
   useEffect(() => {
     const initializeTicketPage = async () => {
       try {
+        console.log('🔧 TicketPageNew: Initializing...');
         const user = await AuthChatService.getCurrentUser();
+        console.log('🔧 TicketPageNew: Current user:', user);
+        
         if (!user) {
+          console.log('🔧 TicketPageNew: No user found, attempting auto-login...');
           // Auto-login as customer for testing
-          await AuthChatService.login('customer@muji.com', '123456');
+          const loginResult = await AuthChatService.login('customer@muji.com', '123456');
+          console.log('🔧 TicketPageNew: Auto-login result:', loginResult);
         }
+        
+        console.log('🔧 TicketPageNew: Loading tickets...');
         await loadTickets();
       } catch (error) {
         console.error('Initialize ticket page error:', error);
@@ -49,6 +59,7 @@ const TicketPageNew: React.FC = () => {
 
   const loadTickets = async () => {
     try {
+      console.log('🔧 TicketPageNew: loadTickets called');
       setLoading(true);
       setError(null);
       
@@ -58,8 +69,11 @@ const TicketPageNew: React.FC = () => {
         search: filters.search || undefined
       });
       
+      console.log('🔧 TicketPageNew: Tickets response:', response);
+      
       // Handle different response formats
       const ticketsData = Array.isArray(response) ? response : (response.data || response.tickets || []);
+      console.log('🔧 TicketPageNew: Processed tickets data:', ticketsData);
       setTickets(ticketsData);
     } catch (error) {
       console.error('Load tickets error:', error);
@@ -103,8 +117,11 @@ const TicketPageNew: React.FC = () => {
   };
 
   const handleViewDetails = (ticket: Ticket) => {
+    console.log('🔍 handleViewDetails called with ticket:', ticket);
+    alert(`Opening ticket: ${ticket.ticketNumber} - ${ticket.title}`);
     setSelectedTicket(ticket);
     setShowDetailsModal(true);
+    console.log('🔍 Modal should be visible now');
   };
 
   const handleFilterChange = (key: string, value: string) => {
@@ -306,72 +323,155 @@ const TicketPageNew: React.FC = () => {
           />
         )}
 
-        {/* Ticket Details Modal */}
+        {/* Ticket Details Modal - Inline Styles Version */}
         {showDetailsModal && selectedTicket && (
-          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-            <div className="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-1/2 shadow-lg rounded-md bg-white">
-              <div className="mt-3">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-medium text-gray-900">Chi tiết Ticket</h3>
-                  <button
-                    onClick={() => setShowDetailsModal(false)}
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <span className="sr-only">Đóng</span>
-                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
+          <div 
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 9999
+            }}
+            onClick={() => setShowDetailsModal(false)}
+          >
+            <div 
+              style={{
+                backgroundColor: 'white',
+                borderRadius: '8px',
+                padding: '24px',
+                maxWidth: '600px',
+                width: '90%',
+                maxHeight: '80vh',
+                overflowY: 'auto',
+                boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#111827', margin: 0 }}>
+                  Chi tiết Ticket
+                </h3>
+                <button
+                  onClick={() => setShowDetailsModal(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    color: '#6B7280',
+                    cursor: 'pointer',
+                    padding: '4px'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                    Ticket Number
+                  </label>
+                  <p style={{ margin: 0, fontSize: '14px', color: '#111827', fontFamily: 'monospace', fontWeight: 'bold' }}>
+                    {selectedTicket.ticketNumber}
+                  </p>
                 </div>
                 
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Ticket Number</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedTicket.ticketNumber}</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Tiêu đề</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedTicket.title}</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Mô tả</label>
-                    <p className="mt-1 text-sm text-gray-900 whitespace-pre-wrap">{selectedTicket.description}</p>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">Trạng thái</label>
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(selectedTicket.statusName)}`}>
-                        {selectedTicket.statusName}
-                      </span>
-                    </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">Độ ưu tiên</label>
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getPriorityColor(selectedTicket.priorityLevel)}`}>
-                        {selectedTicket.priorityLevel}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Ngày tạo</label>
-                    <p className="mt-1 text-sm text-gray-900">
-                      {new Date(selectedTicket.createdAt).toLocaleString('vi-VN')}
-                    </p>
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                    Tiêu đề
+                  </label>
+                  <p style={{ margin: 0, fontSize: '14px', color: '#111827', fontWeight: '600' }}>
+                    {selectedTicket.title}
+                  </p>
+                </div>
+                
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                    Mô tả
+                  </label>
+                  <div style={{ 
+                    backgroundColor: '#F9FAFB', 
+                    padding: '12px', 
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    color: '#111827',
+                    whiteSpace: 'pre-wrap',
+                    minHeight: '60px'
+                  }}>
+                    {selectedTicket.description || 'Không có mô tả'}
                   </div>
                 </div>
                 
-                <div className="mt-6 flex justify-end">
-                  <button
-                    onClick={() => setShowDetailsModal(false)}
-                    className="bg-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-400"
-                  >
-                    Đóng
-                  </button>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                      Trạng thái
+                    </label>
+                    <span style={{
+                      display: 'inline-flex',
+                      padding: '4px 12px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      borderRadius: '9999px',
+                      backgroundColor: '#D1FAE5',
+                      color: '#065F46'
+                    }}>
+                      {selectedTicket.statusName}
+                    </span>
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                      Độ ưu tiên
+                    </label>
+                    <span style={{
+                      display: 'inline-flex',
+                      padding: '4px 12px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      borderRadius: '9999px',
+                      backgroundColor: '#FEF3C7',
+                      color: '#92400E'
+                    }}>
+                      {selectedTicket.priorityLevel}
+                    </span>
+                  </div>
                 </div>
+                
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>
+                    Ngày tạo
+                  </label>
+                  <p style={{ margin: 0, fontSize: '14px', color: '#111827' }}>
+                    {new Date(selectedTicket.createdAt).toLocaleString('vi-VN')}
+                  </p>
+                </div>
+              </div>
+              
+              <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowDetailsModal(false)}
+                  style={{
+                    backgroundColor: '#2563EB',
+                    color: 'white',
+                    padding: '8px 24px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    cursor: 'pointer'
+                  }}
+                  onMouseOver={(e) => e.target.style.backgroundColor = '#1D4ED8'}
+                  onMouseOut={(e) => e.target.style.backgroundColor = '#2563EB'}
+                >
+                  Đóng
+                </button>
               </div>
             </div>
           </div>

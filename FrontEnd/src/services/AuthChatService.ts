@@ -48,14 +48,14 @@ class AuthChatService {
   // Auto-login for agent (for testing purposes)
   static async autoLoginAgent(): Promise<boolean> {
     try {
-      const response = await fetch('http://localhost:4000/api/auth/login', {
+      const response = await fetch('http://localhost:4000/api/auth/admin-login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          email: 'agent@muji.com',
-          password: '123456'
+          email: 'admin@muji.com',
+          password: 'admin123'
         })
       });
 
@@ -642,35 +642,36 @@ class AuthChatService {
   // Get access token (with auto-refresh)
   static async getToken() {
     // Try sessionStorage first, then localStorage
-    let token = sessionStorage.getItem('accessToken');
+    // Check both 'accessToken' and 'token' keys for compatibility
+    let token = sessionStorage.getItem('accessToken') || sessionStorage.getItem('token');
     if (!token) {
-      token = localStorage.getItem('accessToken');
+      token = localStorage.getItem('accessToken') || localStorage.getItem('token');
     }
     
-    // console.log('🔍 AuthChatService.getToken() - Found token:', token);
-    // console.log('🔍 AuthChatService.getToken() - Token type:', typeof token);
-    // console.log('🔍 AuthChatService.getToken() - SessionStorage keys:', Object.keys(sessionStorage));
-    // console.log('🔍 AuthChatService.getToken() - LocalStorage keys:', Object.keys(localStorage));
+    console.log('🔍 AuthChatService.getToken() - Found token:', token);
+    console.log('🔍 AuthChatService.getToken() - Token type:', typeof token);
+    console.log('🔍 AuthChatService.getToken() - SessionStorage keys:', Object.keys(sessionStorage));
+    console.log('🔍 AuthChatService.getToken() - LocalStorage keys:', Object.keys(localStorage));
     
     if (!token) {
-      // console.log('🔍 AuthChatService.getToken() - No token found');
+      console.log('🔍 AuthChatService.getToken() - No token found');
       return null;
     }
     
     // Check if token is expired and try to refresh
     if (this.isTokenExpired(token)) {
-      // console.log('🔍 AuthChatService.getToken() - Token expired, attempting refresh...');
+      console.log('🔍 AuthChatService.getToken() - Token expired, attempting refresh...');
       const refreshedToken = await this.refreshTokenIfNeeded();
       if (refreshedToken) {
-        // console.log('🔍 AuthChatService.getToken() - Token refreshed successfully');
+        console.log('🔍 AuthChatService.getToken() - Token refreshed successfully');
         return refreshedToken;
       } else {
-        // console.log('🔍 AuthChatService.getToken() - Token refresh failed');
+        console.log('🔍 AuthChatService.getToken() - Token refresh failed');
         return null;
       }
     }
     
-    // console.log('🔍 AuthChatService.getToken() - Token valid, returning:', token);
+    console.log('🔍 AuthChatService.getToken() - Token valid, returning:', token);
     return token;
   }
 

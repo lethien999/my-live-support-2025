@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import ShoppingCart from './components/ShoppingCart';
+import ErrorBoundary from './components/ErrorBoundary';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -15,9 +16,11 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import CartPage from './pages/CartPage';
 import CheckoutPage from './pages/CheckoutPage';
 import AgentSupportDashboard from './pages/AgentSupportDashboard';
+import AgentSupportChat from './pages/AgentSupportChat';
 import OrderManagementPage from './pages/OrderManagementPage';
 import TicketManagementPage from './pages/TicketManagementPage';
 import ChatShopPage from './pages/ChatShopPage';
+import RatingManagementPage from './pages/RatingManagementPage';
 
 function App() {
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
@@ -34,6 +37,11 @@ function App() {
 
   // Simple routing based on pathname
   const getCurrentPage = () => {
+    // Handle dynamic product routes
+    if (currentPath.startsWith('/product/')) {
+      return <ProductDetailPage />;
+    }
+    
     switch (currentPath) {
       case '/login':
         return <LoginPage />;
@@ -44,7 +52,11 @@ function App() {
       case '/dashboard':
         return <DashboardPage />;
       case '/admin':
-        return <AdminDashboardPage />;
+        return (
+          <ErrorBoundary>
+            <AdminDashboardPage />
+          </ErrorBoundary>
+        );
       case '/customer-chat':
         return <CustomerChatPage />;
       case '/agent-dashboard':
@@ -55,16 +67,20 @@ function App() {
         return <TicketManagementPage />;
       case '/products':
         return <ProductsPage />;
-      case '/product':
-        return <ProductDetailPage />;
       case '/cart':
         return <CartPage />;
       case '/checkout':
         return <CheckoutPage />;
       case '/shop-chat':
         return <ChatShopPage />;
+      case '/agent-chat':
+        return <AgentChatPageNew />;
+      case '/support-chat':
+        return <AgentSupportChat />;
       case '/orders':
         return <OrderManagementPage />;
+      case '/rating-management':
+        return <RatingManagementPage />;
       // case '/test-chat':
       //   return <TestChatPage />;
       case '/':
@@ -76,6 +92,7 @@ function App() {
   // Check if current page should hide header/footer
   const isChatPage = currentPath.startsWith('/customer-chat') || 
                      currentPath.startsWith('/agent-chat') || 
+                     currentPath.startsWith('/support-chat') ||
                      currentPath.startsWith('/shop-chat');
 
   if (isChatPage) {

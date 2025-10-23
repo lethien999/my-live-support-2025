@@ -219,17 +219,25 @@ const AgentSupportDashboard: React.FC = () => {
       console.log('🔍 Chat rooms data:', data);
       
       // Map backend data to frontend format
-      const mappedRooms = (data.rooms || []).map((room: any) => ({
+      const mappedRooms = (data.chatRooms || []).map((room: any) => ({
         roomId: room.roomId,
-        roomName: room.name,
+        roomName: room.roomName,
         customerId: room.customerId,
         customerName: room.customerName,
+        customerEmail: room.customerEmail,
+        customerPhone: room.customerPhone,
+        agentId: room.agentId,
+        agentName: room.agentName,
         ticketId: room.ticketId,
-        ticketNumber: room.ticketNumber,
+        ticketTitle: room.ticketTitle,
+        ticketStatus: room.ticketStatus,
+        ticketPriority: room.ticketPriority,
         lastMessage: room.lastMessage,
         lastMessageAt: room.lastMessageAt,
         unreadCount: room.unreadCount || 0,
-        isActive: room.isActive
+        isActive: room.isActive,
+        averageRating: room.averageRating,
+        totalRatings: room.totalRatings
       }));
       
       setChatRooms(mappedRooms);
@@ -250,30 +258,42 @@ const AgentSupportDashboard: React.FC = () => {
         return;
       }
       
-      const response = await fetch(getApiUrl(`/api/agent/tickets/${ticket.ticketId}/assign`), {
+      console.log('🔍 Receiving ticket:', ticket.ticketId);
+      
+      const response = await fetch(getApiUrl('/api/agent/receive-ticket'), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({
+          ticketId: ticket.ticketId
+        })
       });
+
+      console.log('🔍 Receive ticket response status:', response.status);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Assign ticket error:', errorText);
-        throw new Error('Failed to assign ticket');
+        console.error('❌ Receive ticket error:', errorText);
+        throw new Error('Failed to receive ticket');
       }
 
       const data = await response.json();
+      console.log('🔍 Receive ticket response:', data);
+      
       if (data.success) {
-        console.log('✅ Ticket assigned successfully');
-        loadTickets(); // Reload tickets
-        loadChatRooms(); // Reload chat rooms
+        console.log('✅ Ticket received successfully:', data.message);
+        alert(`✅ ${data.message}\nChat Room ID: ${data.data.roomId}`);
+        
+        // Reload data
+        await loadTickets();
+        await loadChatRooms();
       }
 
     } catch (error) {
-      console.error('❌ Error assigning ticket:', error);
-      setError('Không thể phân công ticket: ' + (error as Error).message);
+      console.error('❌ Error receiving ticket:', error);
+      setError('Không thể nhận ticket: ' + (error as Error).message);
     }
   };
 
@@ -586,7 +606,9 @@ const AgentSupportDashboard: React.FC = () => {
                     </div>
 
                     <div style={{ fontSize: '13px', color: '#666', marginBottom: '10px' }}>
-                      👤 {ticket.customerName} ({ticket.customerEmail})
+                      {ticket.agentName && (
+                        <span>👨‍💼 Agent: {ticket.agentName}</span>
+                      )}
                     </div>
 
                     <div style={{ fontSize: '12px', color: '#999', marginBottom: '10px' }}>
@@ -705,8 +727,16 @@ const AgentSupportDashboard: React.FC = () => {
                           {room.roomName}
                         </div>
                         <div style={{ fontSize: '14px', color: '#333', marginBottom: '8px' }}>
-                          👤 {room.customerName}
+                          👤 {room.customerName || 'Khách hàng'}
                         </div>
+                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '5px' }}>
+                          📧 {room.customerEmail || 'N/A'}
+                        </div>
+                        {room.agentName && (
+                          <div style={{ fontSize: '12px', color: '#666' }}>
+                            👨‍💼 Agent: {room.agentName}
+                          </div>
+                        )}
                       </div>
                       
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -736,9 +766,14 @@ const AgentSupportDashboard: React.FC = () => {
                       </div>
                     </div>
 
-                    {room.ticketNumber && (
+                    {room.ticketId && (
                       <div style={{ fontSize: '13px', color: '#666', marginBottom: '8px' }}>
-                        🎫 Ticket: {room.ticketNumber}
+                        🎫 Ticket: TKT-{room.ticketId.toString().padStart(6, '0')}
+                        {room.ticketTitle && (
+                          <span style={{ marginLeft: '10px' }}>
+                            - {room.ticketTitle}
+                          </span>
+                        )}
                       </div>
                     )}
 

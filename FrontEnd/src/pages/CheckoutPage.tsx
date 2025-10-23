@@ -101,12 +101,11 @@ const CheckoutPage: React.FC = () => {
 
       // Load cart items from backend
       const response = await fetch(getApiUrl('/api/cart'), {
-        method: 'POST', // Use POST to send user info
+        method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ userInfo })
+        }
       });
       
       if (!response.ok) {
@@ -116,9 +115,9 @@ const CheckoutPage: React.FC = () => {
       const data = await response.json();
       console.log('📦 CheckoutPage: Cart data received:', data);
       
-      if (data.success && data.items) {
+      if (data.success && data.cartItems) {
         // Convert cart items to order items format
-        const orderItems: OrderItem[] = data.items.map((item: any) => ({
+        const orderItems: OrderItem[] = data.cartItems.map((item: any) => ({
           ProductID: item.ProductID,
           ProductName: item.ProductName,
           Price: item.Price,

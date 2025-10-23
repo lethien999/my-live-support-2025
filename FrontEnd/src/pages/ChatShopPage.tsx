@@ -3,6 +3,8 @@ import AuthChatService from '../services/AuthChatService';
 import ConversationService, { Conversation, Message } from '../services/ConversationService';
 import chatSocketManager from '../services/ChatSocketManager';
 import { formatTime } from '../utils/dateUtils';
+import ChatRatingModal from '../components/ChatRatingModal';
+import { getApiUrl } from '../config/api';
 
 const ChatShopPage: React.FC = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -14,6 +16,12 @@ const ChatShopPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [showChatMenu, setShowChatMenu] = useState(false);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [ratingComment, setRatingComment] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -62,6 +70,21 @@ const ChatShopPage: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (showChatMenu) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('[data-chat-menu]')) {
+          setShowChatMenu(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showChatMenu]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -136,35 +159,66 @@ const ChatShopPage: React.FC = () => {
   };
 
   const sendMessage = async (content: string) => {
-    if (!selectedConversation || !content.trim() || sending) return;
+    if (!selectedConversation || (!content.trim() && selectedFiles.length === 0) || sending) return;
 
     console.log('🔍 Debug sendMessage:', {
       selectedConversation: selectedConversation,
       conversationId: selectedConversation?.id,
       content: content,
+      files: selectedFiles.length,
       contentTrim: content.trim()
     });
 
     try {
       setSending(true);
-      await ConversationService.sendMessage({
-        conversationId: selectedConversation.id,
-        content: content,
-        clientTempId: `temp_${Date.now()}`
-      });
+      
+      // Send files first if any
+      if (selectedFiles.length > 0) {
+        for (const file of selectedFiles) {
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('conversationId', selectedConversation.id);
+          formData.append('senderId', currentUserId);
+          formData.append('senderType', 'Agent');
+          
+          try {
+            const response = await fetch('http://localhost:4000/api/chat/upload', {
+              method: 'POST',
+              body: formData
+            });
+            
+            if (response.ok) {
+              const result = await response.json();
+              console.log('📎 File uploaded:', result);
+            }
+          } catch (error) {
+            console.error('❌ File upload error:', error);
+          }
+        }
+      }
+      
+      // Send text message if any
+      if (content.trim()) {
+        await ConversationService.sendMessage({
+          conversationId: selectedConversation.id,
+          content: content,
+          clientTempId: `temp_${Date.now()}`
+        });
+      }
       
       const newMsg: Message = {
         id: `temp_${Date.now()}`,
         conversationId: selectedConversation.id,
         senderId: currentUserId,
         senderType: 'Agent',
-        content: content,
+        content: content || `📎 Đã gửi ${selectedFiles.length} file(s)`,
         timestamp: new Date().toISOString(),
         isRead: false
       };
       
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
+      setSelectedFiles([]); // Clear selected files
     } catch (error) {
       console.error('Error sending message:', error);
       setError('Không thể gửi tin nhắn');
@@ -172,6 +226,60 @@ const ChatShopPage: React.FC = () => {
       setSending(false);
     }
   };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files) {
+      const fileArray = Array.from(files);
+      setSelectedFiles(prev => [...prev, ...fileArray]);
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const addEmoji = (emoji: string) => {
+    setNewMessage(prev => prev + emoji);
+    setShowEmojiPicker(false);
+  };
+
+  const handleRatingSubmit = async () => {
+    if (rating === 0 || !selectedConversation) return;
+
+    try {
+      const token = await AuthChatService.getToken();
+      const response = await fetch(getApiUrl('/api/chat/rating'), {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          roomId: selectedConversation.conversationId,
+          rating: rating,
+          comment: ratingComment
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to submit rating: ${response.status}`);
+      }
+
+      setShowRatingModal(false);
+      setRating(0);
+      setRatingComment('');
+      setShowChatMenu(false);
+      
+      alert('Cảm ơn bạn đã đánh giá!');
+      console.log('✅ Rating submitted successfully');
+    } catch (error) {
+      console.error('❌ Error submitting rating:', error);
+      alert('Không thể gửi đánh giá. Vui lòng thử lại.');
+    }
+  };
+
+  const emojis = ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫', '🤥', '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴', '🤤', '😪', '😵', '🤐', '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '🤑', '🤠', '😈', '👿', '👹', '👺', '🤡', '💩', '👻', '💀', '☠️', '👽', '👾', '🤖', '🎃', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾'];
 
   const selectConversation = (conversation: Conversation) => {
     setSelectedConversation(conversation);
@@ -351,6 +459,35 @@ const ChatShopPage: React.FC = () => {
                 <p style={{ fontSize: '14px', opacity: 0.8, margin: 0 }}>Hỗ trợ khách hàng</p>
               </div>
             </div>
+            
+            {/* Exit Button */}
+            <button
+              onClick={() => {
+                window.history.pushState({}, '', '/');
+                window.dispatchEvent(new PopStateEvent('popstate'));
+              }}
+              style={{
+                background: 'rgba(255, 255, 255, 0.2)',
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                borderRadius: '8px',
+                color: 'white',
+                padding: '8px 16px',
+                fontSize: '14px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                transition: 'all 0.3s ease'
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.3)';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
+              }}
+            >
+              🏠 Trang chủ
+            </button>
           </div>
           
           {/* Search Bar */}
@@ -613,7 +750,7 @@ const ChatShopPage: React.FC = () => {
                   </div>
                 </div>
                 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', position: 'relative' }}>
                   <button style={{
                     padding: '12px',
                     background: 'none',
@@ -625,17 +762,112 @@ const ChatShopPage: React.FC = () => {
                   }}>
                     📞
                   </button>
-                  <button style={{
-                    padding: '12px',
-                    background: 'none',
-                    border: 'none',
-                    color: '#666',
-                    cursor: 'pointer',
-                    borderRadius: '50%',
-                    transition: 'all 0.2s ease'
-                  }}>
-                    ⋮
-                  </button>
+                  <div style={{ position: 'relative' }} data-chat-menu>
+                    <button 
+                      onClick={() => setShowChatMenu(!showChatMenu)}
+                      style={{
+                        padding: '12px',
+                        background: 'none',
+                        border: 'none',
+                        color: '#666',
+                        cursor: 'pointer',
+                        borderRadius: '50%',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      ⋮
+                    </button>
+                    
+                    {/* Dropdown Menu */}
+                    {showChatMenu && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '100%',
+                        right: '0',
+                        background: 'white',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                        zIndex: 1000,
+                        minWidth: '200px',
+                        marginTop: '8px'
+                      }}>
+                        <button
+                          onClick={() => {
+                            setShowRatingModal(true);
+                            setShowChatMenu(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '12px 16px',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#374151',
+                            borderBottom: '1px solid #f3f4f6',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fafb'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          ⭐ Đánh giá chat
+                        </button>
+                        
+                        <button
+                          onClick={() => {
+                            alert('Tính năng báo cáo sắp có');
+                            setShowChatMenu(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '12px 16px',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#374151',
+                            borderBottom: '1px solid #f3f4f6',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fafb'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          🚨 Báo cáo
+                        </button>
+                        
+                        <button
+                          onClick={() => {
+                            alert('Tính năng chia sẻ sắp có');
+                            setShowChatMenu(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '12px 16px',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#374151',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fafb'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          📤 Chia sẻ
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -725,7 +957,66 @@ const ChatShopPage: React.FC = () => {
                       }}>
                         <div style={messageBubbleStyle(isOwn)}>
                           <div style={{ fontSize: '16px', lineHeight: '1.5' }}>
-                            {message.content}
+                            {/* Check if message contains file URL */}
+                            {message.content && message.content.startsWith('/uploads/chat-files/') ? (
+                              <div>
+                                {message.content.endsWith('.jpg') || message.content.endsWith('.jpeg') || 
+                                 message.content.endsWith('.png') || message.content.endsWith('.gif') || 
+                                 message.content.endsWith('.webp') ? (
+                                  <div>
+                                    <img 
+                                      src={`http://localhost:4000${message.content}`}
+                                      alt="Uploaded image"
+                                      style={{
+                                        maxWidth: '300px',
+                                        maxHeight: '300px',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer'
+                                      }}
+                                      onClick={() => window.open(`http://localhost:4000${message.content}`, '_blank')}
+                                    />
+                                    <div style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
+                                      📷 Hình ảnh
+                                    </div>
+                                  </div>
+                                ) : message.content.endsWith('.mp4') || message.content.endsWith('.webm') || 
+                                      message.content.endsWith('.mov') || message.content.endsWith('.avi') ? (
+                                  <div>
+                                    <video 
+                                      src={`http://localhost:4000${message.content}`}
+                                      controls
+                                      style={{
+                                        maxWidth: '300px',
+                                        maxHeight: '300px',
+                                        borderRadius: '8px'
+                                      }}
+                                    />
+                                    <div style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
+                                      🎥 Video
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <a 
+                                      href={`http://localhost:4000${message.content}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{
+                                        color: '#667eea',
+                                        textDecoration: 'none',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px'
+                                      }}
+                                    >
+                                      📎 {message.content.split('/').pop()}
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              message.content
+                            )}
                           </div>
                           <div style={{
                             fontSize: '12px',
@@ -748,6 +1039,134 @@ const ChatShopPage: React.FC = () => {
 
             {/* Message Input */}
             <div style={inputStyle}>
+              {/* File Preview */}
+              {selectedFiles.length > 0 && (
+                <div style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                  marginBottom: '10px',
+                  padding: '10px',
+                  background: '#f8f9fa',
+                  borderRadius: '8px',
+                  border: '1px solid #e9ecef'
+                }}>
+                  {selectedFiles.map((file, index) => (
+                    <div key={index} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      background: 'white',
+                      padding: '6px 12px',
+                      borderRadius: '20px',
+                      fontSize: '14px',
+                      color: '#666',
+                      border: '1px solid #ddd',
+                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+                      maxWidth: '200px'
+                    }}>
+                      {file.type.startsWith('image/') ? (
+                        <img 
+                          src={URL.createObjectURL(file)} 
+                          alt="Preview" 
+                          style={{
+                            width: '30px',
+                            height: '30px',
+                            objectFit: 'cover',
+                            borderRadius: '4px'
+                          }}
+                        />
+                      ) : file.type.startsWith('video/') ? (
+                        <video 
+                          src={URL.createObjectURL(file)} 
+                          style={{
+                            width: '30px',
+                            height: '30px',
+                            objectFit: 'cover',
+                            borderRadius: '4px'
+                          }}
+                        />
+                      ) : (
+                        <span>📎</span>
+                      )}
+                      <span style={{ 
+                        overflow: 'hidden', 
+                        textOverflow: 'ellipsis', 
+                        whiteSpace: 'nowrap',
+                        maxWidth: '120px'
+                      }}>
+                        {file.name}
+                      </span>
+                      <button
+                        onClick={() => removeFile(index)}
+                        style={{
+                          background: '#ff4757',
+                          border: 'none',
+                          borderRadius: '50%',
+                          color: 'white',
+                          cursor: 'pointer',
+                          padding: '2px 6px',
+                          fontSize: '12px',
+                          transition: 'all 0.2s ease'
+                        }}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.background = '#ff3742';
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.background = '#ff4757';
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Emoji Picker */}
+              {showEmojiPicker && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: '70px',
+                  right: '20px',
+                  background: 'white',
+                  border: '1px solid #ddd',
+                  borderRadius: '12px',
+                  padding: '15px',
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+                  zIndex: 1000,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(8, 1fr)',
+                  gap: '5px'
+                }}>
+                  {emojis.map((emoji, index) => (
+                    <button
+                      key={index}
+                      onClick={() => addEmoji(emoji)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '20px',
+                        cursor: 'pointer',
+                        padding: '5px',
+                        borderRadius: '4px',
+                        transition: 'background 0.2s ease'
+                      }}
+                      onMouseOver={(e) => {
+                        e.currentTarget.style.background = '#f0f0f0';
+                      }}
+                      onMouseOut={(e) => {
+                        e.currentTarget.style.background = 'none';
+                      }}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -781,35 +1200,51 @@ const ChatShopPage: React.FC = () => {
                   />
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <button style={{
+                  {/* File Upload Button */}
+                  <label style={{
                     padding: '12px',
                     background: 'none',
                     border: 'none',
                     color: '#666',
                     cursor: 'pointer',
                     borderRadius: '50%',
-                    transition: 'all 0.2s ease'
+                    transition: 'all 0.2s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
                   }}>
                     📷
-                  </button>
-                  <button style={{
-                    padding: '12px',
-                    background: 'none',
-                    border: 'none',
-                    color: '#666',
-                    cursor: 'pointer',
-                    borderRadius: '50%',
-                    transition: 'all 0.2s ease'
-                  }}>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,video/*"
+                      onChange={handleFileUpload}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  
+                  {/* Emoji Button */}
+                  <button 
+                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                    style={{
+                      padding: '12px',
+                      background: 'none',
+                      border: 'none',
+                      color: '#666',
+                      cursor: 'pointer',
+                      borderRadius: '50%',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
                     😊
                   </button>
                   <button
                     onClick={() => {
-                      if (newMessage.trim()) {
+                      if (newMessage.trim() || selectedFiles.length > 0) {
                         sendMessage(newMessage);
                       }
                     }}
-                    disabled={!newMessage.trim() || sending}
+                    disabled={(!newMessage.trim() && selectedFiles.length === 0) || sending}
                     style={{
                       background: 'linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%)',
                       color: 'white',
@@ -818,7 +1253,7 @@ const ChatShopPage: React.FC = () => {
                       borderRadius: '50%',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
-                      opacity: (!newMessage.trim() || sending) ? 0.5 : 1,
+                      opacity: ((!newMessage.trim() && selectedFiles.length === 0) || sending) ? 0.5 : 1,
                       transform: 'scale(1)',
                       fontSize: '20px'
                     }}
@@ -882,6 +1317,17 @@ const ChatShopPage: React.FC = () => {
           60% { transform: translateY(-5px); }
         }
       `}</style>
+      
+      {/* Rating Modal */}
+      <ChatRatingModal
+        isOpen={showRatingModal}
+        onClose={() => setShowRatingModal(false)}
+        onSubmit={handleRatingSubmit}
+        rating={rating}
+        setRating={setRating}
+        comment={ratingComment}
+        setComment={setRatingComment}
+      />
     </div>
   );
 };

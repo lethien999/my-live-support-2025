@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
 import { getApiUrl } from '../config/api';
 import AuthChatService from '../services/AuthChatService';
+import { getProductIdFromPath } from '../utils/navigation';
 
 interface Product {
   id: string;
@@ -34,7 +34,6 @@ interface Product {
 }
 
 const ProductDetailPage: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
   const [product, setProduct] = useState<Product | null>(null);
   const [selectedImage, setSelectedImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
@@ -49,8 +48,8 @@ const ProductDetailPage: React.FC = () => {
       try {
         setLoading(true);
         
-        // Get product ID from route params
-        const productId = id;
+        // Get product ID from URL path
+        const productId = getProductIdFromPath();
         
         if (!productId) {
           setLoading(false);
@@ -69,7 +68,47 @@ const ProductDetailPage: React.FC = () => {
         console.log('🔍 ProductDetailPage: Response data:', productData);
         
         if (response.ok) {
-          setProduct(productData.product);
+          // Map backend data to frontend format
+          const backendProduct = productData.product;
+          const mappedProduct: Product = {
+            id: backendProduct.ProductID.toString(),
+            name: backendProduct.ProductName,
+            description: backendProduct.Description,
+            longDescription: backendProduct.Description || 'Không có mô tả chi tiết',
+            price: backendProduct.Price,
+            originalPrice: backendProduct.OriginalPrice,
+            images: [backendProduct.ImagePath || '/images/products/default.jpg'],
+            category: backendProduct.CategoryName,
+            inStock: backendProduct.IsInStock,
+            stockCount: backendProduct.StockQuantity,
+            rating: backendProduct.AverageRating || 0,
+            reviewCount: backendProduct.ReviewCount || 0,
+            tags: ['nội thất', 'gỗ', 'cao cấp'],
+            specifications: {
+              material: 'Gỗ tự nhiên',
+              dimensions: '120cm x 60cm x 75cm',
+              weight: '25kg',
+              origin: 'Việt Nam',
+              warranty: '2 năm'
+            },
+            reviews: [
+              {
+                id: '1',
+                userName: 'Nguyễn Văn A',
+                rating: 5,
+                comment: 'Sản phẩm rất đẹp và chất lượng tốt',
+                date: '2024-01-15'
+              },
+              {
+                id: '2',
+                userName: 'Trần Thị B',
+                rating: 4,
+                comment: 'Giao hàng nhanh, sản phẩm đúng như mô tả',
+                date: '2024-01-10'
+              }
+            ]
+          };
+          setProduct(mappedProduct);
           console.log('✅ ProductDetailPage: Product loaded successfully');
         } else {
           console.error('❌ ProductDetailPage: Error loading product:', productData.error);

@@ -1,368 +1,230 @@
 import React, { useState, useEffect } from 'react';
-import { formatDate } from '../utils/dateUtils';
-import AuthChatService from '../services/AuthChatService';
 import { getApiUrl } from '../config/api';
+import RatingManagementPage from './RatingManagementPage';
+
+// ===========================================
+// TYPES
+// ===========================================
 
 interface User {
-  UserID: number;
-  Email: string;
-  FullName: string;
-  Phone: string;
-  Address: string;
-  Status: string;
-  CreatedAt: string;
-  Role: string;
+  id: number;
+  email: string;
+  fullName: string;
+  phone: string;
+  address: string;
+  status: string;
+  role: string;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string;
+  avatar: string;
 }
 
 interface Product {
-  ProductID: number;
-  ProductName: string;
-  Description: string;
-  Price: number;
-  StockQuantity: number;
-  ImagePath: string;
-  Status: string;
-  CreatedAt: string;
-  CategoryName: string;
+  id: number;
+  name: string;
+  description: string;
+  longDescription: string;
+  categoryId: number;
+  categoryName: string;
+  price: number;
+  originalPrice: number;
+  imagePath: string;
+  stockQuantity: number;
+  isInStock: boolean;
+  averageRating: number;
+  reviewCount: number;
+  createdAt: string;
+  updatedAt: string;
+  shopId: number;
+  isActive: boolean;
+  isFeatured: boolean;
 }
 
 interface Category {
-  CategoryID: number;
-  CategoryName: string;
-  Description: string;
-  IconPath: string;
-  Status: string;
-  CreatedAt: string;
+  id: number;
+  name: string;
+  parentCategoryId: number;
+  description: string;
+  iconPath: string;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string;
 }
 
 interface Order {
-  OrderID: number;
-  OrderNumber: string;
-  UserID: number;
-  OrderDate: string;
-  TotalAmount: number;
-  Status: string;
-  ShippingAddress: string;
-  PaymentMethod: string;
-  ShippingMethod: string;
-  Notes: string;
-  CreatedAt: string;
-  CustomerName: string;
-  CustomerEmail: string;
+  id: number;
+  orderNumber: string;
+  customerId: number;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  status: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  shippingAddress: string;
+  billingAddress: string;
+  subTotal: number;
+  taxAmount: number;
+  shippingCost: number;
+  totalAmount: number;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  shippedAt: string;
+  deliveredAt: string;
 }
 
-interface OrderItem {
-  OrderItemID: number;
-  ProductID: number;
-  Quantity: number;
-  ProductPrice: number;
-  SubTotal: number;
-  ProductName: string;
-  ImagePath: string;
-}
-
-interface OrderStats {
-  totalOrders: number;
-  pendingOrders: number;
-  processingOrders: number;
-  shippedOrders: number;
-  deliveredOrders: number;
-  cancelledOrders: number;
+interface DashboardStats {
+  users: {
+    total: number;
+    active: number;
+    customers: number;
+    agents: number;
+    admins: number;
+  };
+  products: {
+    total: number;
+    active: number;
+    inStock: number;
+    featured: number;
+  };
+  orders: {
+    total: number;
+    pending: number;
+    processing: number;
+    shipped: number;
+    delivered: number;
+    cancelled: number;
   totalRevenue: number;
-  averageOrderValue: number;
-  recentOrders: number;
+    thisWeek: number;
+    thisMonth: number;
+  };
+  categories: {
+    total: number;
+    active: number;
+  };
 }
+
+// ===========================================
+// ADMIN DASHBOARD COMPONENT
+// ===========================================
 
 const AdminDashboardPage: React.FC = () => {
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Data states
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [orderStats, setOrderStats] = useState<OrderStats | null>(null);
-  const [_loading, _setLoading] = useState(false);
-  const [_usersLoading, _setUsersLoading] = useState(false);
-  const [productsLoading, setProductsLoading] = useState(false);
-  const [_categoriesLoading, _setCategoriesLoading] = useState(false);
-  const [_ordersLoading, _setOrdersLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [showCreateUser, setShowCreateUser] = useState(false);
-  const [showCreateProduct, setShowCreateProduct] = useState(false);
-  const [showCreateCategory, setShowCreateCategory] = useState(false);
-  const [showOrderDetails, setShowOrderDetails] = useState(false);
+  
+  // Edit states
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
-  const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
-
-  // Form states
-  const [formData, setFormData] = useState({
-    email: '',
-    fullName: '',
-    phone: '',
-    address: '',
-    password: '',
-    status: 'Active'
-  });
-
-  const [productFormData, setProductFormData] = useState({
-    productName: '',
-    description: '',
-    price: '',
-    stockQuantity: '',
-    imagePath: '',
-    categoryId: '',
-    status: 'Active'
-  });
-
-  const [categoryFormData, setCategoryFormData] = useState({
-    categoryName: '',
-    description: '',
-    iconPath: '',
-    status: 'Active'
-  });
-
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  
+  // Debug: Log when editingOrder changes
   useEffect(() => {
-    initializeAdminDashboard();
-  }, []); // Empty dependency array - only run once
+    console.log('🔧 Admin: editingOrder state changed:', editingOrder);
+  }, [editingOrder]);
 
-  const initializeAdminDashboard = async () => {
+  // ===========================================
+  // HELPER FUNCTIONS
+  // ===========================================
+
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': token ? `Bearer ${token}` : ''
+    };
+  };
+
+  // DATA LOADING FUNCTIONS
+  // ===========================================
+
+  const loadDashboardStats = async () => {
     try {
-      AuthChatService.init();
-      let user = AuthChatService.getCurrentUser();
+      setLoading(true);
+      const response = await fetch(getApiUrl('/api/admin/stats'), {
+        headers: getAuthHeaders()
+      });
       
-      // If no user or not admin, try to login as admin
-      if (!user || user.email !== 'admin@muji.com') {
-        console.log('🔍 AdminDashboard - No admin user found, attempting auto-login...');
-        
-        try {
-          const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@muji.com', password: '111111' })
-          });
-          
-          const loginData = await loginResponse.json();
-          if (loginData.success) {
-            console.log('✅ AdminDashboard - Auto-login successful');
-            sessionStorage.setItem('accessToken', loginData.tokens.accessToken);
-            sessionStorage.setItem('refreshToken', loginData.tokens.refreshToken);
-            sessionStorage.setItem('currentUser', JSON.stringify(loginData.user));
-            
-            user = loginData.user;
-            setCurrentUser(user);
-          } else {
-            console.error('❌ AdminDashboard - Auto-login failed:', loginData);
-            window.location.href = '/dashboard';
-            return;
-          }
-        } catch (loginError) {
-          console.error('❌ AdminDashboard - Auto-login error:', loginError);
-          window.location.href = '/dashboard';
-          return;
-        }
+      if (!response.ok) {
+        throw new Error('Failed to fetch dashboard stats');
       }
       
-      if (user && user.email === 'admin@muji.com') {
-        setCurrentUser(user);
-        // Load data only once
-        loadUsers();
-        loadProducts();
-        loadCategories();
-        loadOrders();
-        loadOrderStats();
-      } else {
-        // Redirect non-admin users
-        window.location.href = '/dashboard';
+      const data = await response.json();
+      if (data.success) {
+        setStats(data.data);
+        console.log('✅ Dashboard stats loaded:', data.data);
       }
     } catch (error) {
-      console.error('❌ AdminDashboard - Initialization error:', error);
-      window.location.href = '/dashboard';
+      console.error('❌ Error loading dashboard stats:', error);
+      setError('Không thể tải thống kê dashboard');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Load data when activeTab changes
-  useEffect(() => {
-    if (currentUser && currentUser.email === 'admin@muji.com') {
-      if (activeTab === 'users' && users.length === 0) {
-        loadUsers();
-      } else if (activeTab === 'products' && products.length === 0) {
-        loadProducts();
-      } else if (activeTab === 'categories' && categories.length === 0) {
-        loadCategories();
-      } else if (activeTab === 'orders' && orders.length === 0) {
-        loadOrders();
-      }
-    }
-  }, [activeTab, currentUser, users.length, products.length, categories.length, orders.length]);
-
   const loadUsers = async () => {
     try {
-      const token = await AuthChatService.getToken();
-      
-      console.log('🔍 AdminDashboard - loadUsers - Token:', token);
-      console.log('🔍 AdminDashboard - loadUsers - API URL:', getApiUrl('/api/admin/users'));
-      
-      if (!token) {
-        console.log('❌ AdminDashboard - No token available for loadUsers');
-        return;
-      }
-
+      setLoading(true);
       const response = await fetch(getApiUrl('/api/admin/users'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
 
-      console.log('🔍 AdminDashboard - loadUsers - Response status:', response.status);
-      console.log('🔍 AdminDashboard - loadUsers - Response headers:', response.headers);
-
       if (!response.ok) {
-        const errorText = await response.text();
-        console.log('🔍 AdminDashboard - loadUsers - Error response:', errorText);
         throw new Error('Failed to fetch users');
       }
 
       const data = await response.json();
       if (data.success) {
-        setUsers(data.users);
+        setUsers(data.data);
+        console.log('✅ Users loaded:', data.data.length);
       }
     } catch (error) {
-      console.error('Error loading users:', error);
-      alert('Không thể tải danh sách người dùng');
+      console.error('❌ Error loading users:', error);
+      setError('Không thể tải danh sách người dùng');
+    } finally {
+      setLoading(false);
     }
   };
 
   const loadProducts = async () => {
-    if (productsLoading) {
-      console.log('🔍 AdminDashboard - loadProducts already in progress, skipping');
-      return;
-    }
-    
     try {
-      setProductsLoading(true);
-      const token = await AuthChatService.getToken();
-      
-      console.log('🔍 AdminDashboard - loadProducts - Token:', token);
-      console.log('🔍 AdminDashboard - loadProducts - API URL:', getApiUrl('/api/admin/products'));
-      
-      if (!token) {
-        console.log('❌ AdminDashboard - No token available for loadProducts');
-        console.log('🔍 AdminDashboard - Attempting to login as admin...');
-        
-        // Try to login as admin automatically
-        try {
-          const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@muji.com', password: '111111' })
-          });
-          
-          const loginData = await loginResponse.json();
-          if (loginData.success) {
-            console.log('✅ AdminDashboard - Auto-login successful for products');
-            sessionStorage.setItem('accessToken', loginData.tokens.accessToken);
-            sessionStorage.setItem('refreshToken', loginData.tokens.refreshToken);
-            sessionStorage.setItem('user', JSON.stringify(loginData.user));
-            
-            // Retry with new token
-            const newToken = loginData.tokens.accessToken;
+      setLoading(true);
             const response = await fetch(getApiUrl('/api/admin/products'), {
-              headers: { 'Authorization': `Bearer ${newToken}` }
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.success) {
-                setProducts(data.products);
-                console.log('✅ AdminDashboard - Products loaded after auto-login');
-                return;
-              }
-            }
-          }
-        } catch (loginError) {
-          console.error('❌ AdminDashboard - Auto-login failed for products:', loginError);
-        }
-        
-        return;
-      }
-
-      const response = await fetch(getApiUrl('/api/admin/products'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
 
-      console.log('🔍 AdminDashboard - loadProducts - Response status:', response.status);
-
       if (!response.ok) {
-        const errorText = await response.text();
-        console.log('🔍 AdminDashboard - loadProducts - Error response:', errorText);
         throw new Error('Failed to fetch products');
       }
 
       const data = await response.json();
       if (data.success) {
-        setProducts(data.products);
-        console.log('✅ AdminDashboard - Products loaded successfully:', data.products.length);
+        setProducts(data.data);
+        console.log('✅ Products loaded:', data.data.length);
       }
     } catch (error) {
-      console.error('Error loading products:', error);
-      alert('Không thể tải danh sách sản phẩm');
+      console.error('❌ Error loading products:', error);
+      setError('Không thể tải danh sách sản phẩm');
     } finally {
-      setProductsLoading(false);
+      setLoading(false);
     }
   };
 
   const loadCategories = async () => {
     try {
-      const token = await AuthChatService.getToken();
-      
-      if (!token) {
-        console.log('❌ AdminDashboard - No token available for loadCategories');
-        console.log('🔍 AdminDashboard - Attempting to login as admin...');
-        
-        // Try to login as admin automatically
-        try {
-          const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@muji.com', password: '111111' })
-          });
-          
-          const loginData = await loginResponse.json();
-          if (loginData.success) {
-            console.log('✅ AdminDashboard - Auto-login successful for categories');
-            sessionStorage.setItem('accessToken', loginData.tokens.accessToken);
-            sessionStorage.setItem('refreshToken', loginData.tokens.refreshToken);
-            sessionStorage.setItem('user', JSON.stringify(loginData.user));
-            
-            // Retry with new token
-            const newToken = loginData.tokens.accessToken;
+      setLoading(true);
             const response = await fetch(getApiUrl('/api/admin/categories'), {
-              headers: { 'Authorization': `Bearer ${newToken}` }
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.success) {
-                setCategories(data.categories);
-                console.log('✅ AdminDashboard - Categories loaded after auto-login');
-                return;
-              }
-            }
-          }
-        } catch (loginError) {
-          console.error('❌ AdminDashboard - Auto-login failed for categories:', loginError);
-        }
-        
-        return;
-      }
-
-      const response = await fetch(getApiUrl('/api/admin/categories'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
 
       if (!response.ok) {
@@ -371,63 +233,22 @@ const AdminDashboardPage: React.FC = () => {
 
       const data = await response.json();
       if (data.success) {
-        setCategories(data.categories);
+        setCategories(data.data);
+        console.log('✅ Categories loaded:', data.data.length);
       }
     } catch (error) {
-      console.error('Error loading categories:', error);
-      alert('Không thể tải danh sách danh mục');
+      console.error('❌ Error loading categories:', error);
+      setError('Không thể tải danh sách danh mục');
+    } finally {
+      setLoading(false);
     }
   };
 
   const loadOrders = async () => {
     try {
-      const token = await AuthChatService.getToken();
-      
-      if (!token) {
-        console.log('❌ AdminDashboard - No token available for loadOrders');
-        console.log('🔍 AdminDashboard - Attempting to login as admin...');
-        
-        // Try to login as admin automatically
-        try {
-          const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@muji.com', password: '111111' })
-          });
-          
-          const loginData = await loginResponse.json();
-          if (loginData.success) {
-            console.log('✅ AdminDashboard - Auto-login successful for orders');
-            sessionStorage.setItem('accessToken', loginData.tokens.accessToken);
-            sessionStorage.setItem('refreshToken', loginData.tokens.refreshToken);
-            sessionStorage.setItem('user', JSON.stringify(loginData.user));
-            
-            // Retry with new token
-            const newToken = loginData.tokens.accessToken;
+      setLoading(true);
             const response = await fetch(getApiUrl('/api/admin/orders'), {
-              headers: { 'Authorization': `Bearer ${newToken}` }
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.success) {
-                setOrders(data.orders);
-                console.log('✅ AdminDashboard - Orders loaded after auto-login');
-                return;
-              }
-            }
-          }
-        } catch (loginError) {
-          console.error('❌ AdminDashboard - Auto-login failed for orders:', loginError);
-        }
-        
-        return;
-      }
-
-      const response = await fetch(getApiUrl('/api/admin/orders'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
 
       if (!response.ok) {
@@ -436,655 +257,926 @@ const AdminDashboardPage: React.FC = () => {
 
       const data = await response.json();
       if (data.success) {
-        setOrders(data.orders);
+        setOrders(data.data);
+        console.log('✅ Orders loaded:', data.data.length);
       }
     } catch (error) {
-      console.error('Error loading orders:', error);
-      alert('Không thể tải danh sách đơn hàng');
+      console.error('❌ Error loading orders:', error);
+      setError('Không thể tải danh sách đơn hàng');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const loadOrderStats = async () => {
-    try {
-      const token = await AuthChatService.getToken();
-      
-      if (!token) {
-        console.log('❌ AdminDashboard - No token available for loadOrderStats');
-        console.log('🔍 AdminDashboard - Attempting to login as admin...');
-        
-        // Try to login as admin automatically
-        try {
-          const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@muji.com', password: '111111' })
-          });
-          
-          const loginData = await loginResponse.json();
-          if (loginData.success) {
-            console.log('✅ AdminDashboard - Auto-login successful for order stats');
-            sessionStorage.setItem('accessToken', loginData.tokens.accessToken);
-            sessionStorage.setItem('refreshToken', loginData.tokens.refreshToken);
-            sessionStorage.setItem('user', JSON.stringify(loginData.user));
-            
-            // Retry with new token
-            const newToken = loginData.tokens.accessToken;
-            const response = await fetch(getApiUrl('/api/admin/orders/stats'), {
-              headers: { 'Authorization': `Bearer ${newToken}` }
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.success) {
-                setOrderStats(data.stats);
-                console.log('✅ AdminDashboard - Order stats loaded after auto-login');
-                return;
-              }
-            }
-          }
-        } catch (loginError) {
-          console.error('❌ AdminDashboard - Auto-login failed for order stats:', loginError);
-        }
-        
-        return;
-      }
+  // ===========================================
+  // EFFECTS
+  // ===========================================
 
-      const response = await fetch(getApiUrl('/api/admin/orders/stats'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+  useEffect(() => {
+    // Load dashboard stats on component mount
+    loadDashboardStats();
+  }, []);
+
+  useEffect(() => {
+    // Load data based on active tab
+    switch (activeTab) {
+      case 'users':
+        if (users.length === 0) loadUsers();
+        break;
+      case 'products':
+        if (products.length === 0) loadProducts();
+        break;
+      case 'categories':
+        if (categories.length === 0) loadCategories();
+        break;
+      case 'orders':
+        if (orders.length === 0) loadOrders();
+        break;
+    }
+  }, [activeTab]);
+
+  // ===========================================
+  // UTILITY FUNCTIONS
+  // ===========================================
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('vi-VN', {
+      style: 'currency',
+      currency: 'VND'
+    }).format(amount);
+  };
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return 'N/A';
+    try {
+      return new Date(dateString).toLocaleDateString('vi-VN');
+    } catch {
+      return 'N/A';
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'active': return '#28a745';
+      case 'pending': return '#ffc107';
+      case 'processing': return '#17a2b8';
+      case 'shipped': return '#6f42c1';
+      case 'delivered': return '#28a745';
+      case 'cancelled': return '#dc3545';
+      default: return '#6c757d';
+    }
+  };
+
+  // ===========================================
+  // CRUD OPERATIONS
+  // ===========================================
+
+  const updateUser = async (id: number, userData: Partial<User>) => {
+    try {
+      const response = await fetch(getApiUrl(`/api/admin/users/${id}`), {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(userData)
       });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch order stats');
+        throw new Error('Failed to update user');
       }
-
-      const data = await response.json();
-      if (data.success) {
-        setOrderStats(data.stats);
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload users data
+        await loadUsers();
+        setError('');
+        console.log('✅ User updated successfully');
       }
     } catch (error) {
-      console.error('Error loading order stats:', error);
+      console.error('❌ Error updating user:', error);
+      setError('Không thể cập nhật người dùng');
     }
   };
 
-  const loadOrderDetails = async (orderId: number) => {
+  const deleteUser = async (id: number) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/orders/${orderId}`), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await fetch(getApiUrl(`/api/admin/users/${id}`), {
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch order details');
+        throw new Error('Failed to delete user');
       }
-
-      const data = await response.json();
-      if (data.success) {
-        setSelectedOrder(data.order);
-        setOrderItems(data.items);
-        setShowOrderDetails(true);
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload users data
+        await loadUsers();
+        setError('');
+        console.log('✅ User deleted successfully');
       }
     } catch (error) {
-      console.error('Error loading order details:', error);
-      alert('Không thể tải chi tiết đơn hàng');
+      console.error('❌ Error deleting user:', error);
+      setError('Không thể xóa người dùng');
     }
   };
 
-  const updateOrderStatus = async (orderId: number, status: string, notes: string = '') => {
+  const updateProduct = async (id: number, productData: Partial<Product>) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/orders/${orderId}/status`), {
+      const response = await fetch(getApiUrl(`/api/admin/products/${id}`), {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ status, notes })
+        headers: getAuthHeaders(),
+        body: JSON.stringify(productData)
       });
-
-      const data = await response.json();
       
-      if (data.success) {
-        alert('Cập nhật trạng thái đơn hàng thành công!');
-        loadOrders();
-        loadOrderStats();
-      } else {
-        alert('Lỗi: ' + data.message);
+      if (!response.ok) {
+        throw new Error('Failed to update product');
+      }
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload products data
+        await loadProducts();
+        setError('');
+        console.log('✅ Product updated successfully');
       }
     } catch (error) {
-      console.error('Error updating order status:', error);
-      alert('Không thể cập nhật trạng thái đơn hàng');
+      console.error('❌ Error updating product:', error);
+      setError('Không thể cập nhật sản phẩm');
     }
   };
 
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const deleteProduct = async (id: number) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl('/api/admin/users'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(formData)
-      });
-
-      const data = await response.json();
-      
-      if (data.success) {
-        alert('Tạo người dùng thành công!');
-        setShowCreateUser(false);
-        setFormData({ email: '', fullName: '', phone: '', address: '', password: '', status: 'Active' });
-        loadUsers();
-      } else {
-        alert('Lỗi: ' + data.message);
-      }
-    } catch (error) {
-      console.error('Error creating user:', error);
-      alert('Không thể tạo người dùng');
-    }
-  };
-
-  const handleUpdateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!editingUser) return;
-    
-    try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/users/${editingUser.UserID}`), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(formData)
-      });
-
-      const data = await response.json();
-      
-      if (data.success) {
-        alert('Cập nhật người dùng thành công!');
-        setEditingUser(null);
-        setFormData({ email: '', fullName: '', phone: '', address: '', password: '', status: 'Active' });
-        loadUsers();
-      } else {
-        alert('Lỗi: ' + data.message);
-      }
-    } catch (error) {
-      console.error('Error updating user:', error);
-      alert('Không thể cập nhật người dùng');
-    }
-  };
-
-  const handleDeleteUser = async (userId: number, email: string) => {
-    if (email === 'admin@muji.com') {
-      alert('Không thể xóa tài khoản admin!');
-      return;
-    }
-    
-    if (!confirm(`Bạn có chắc muốn xóa người dùng này?`)) {
-      return;
-    }
-    
-    try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/users/${userId}`), {
+      const response = await fetch(getApiUrl(`/api/admin/products/${id}`), {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
-
-      const data = await response.json();
       
-      if (data.success) {
-        alert('Xóa người dùng thành công!');
-        loadUsers();
-      } else {
-        alert('Lỗi: ' + data.message);
+      if (!response.ok) {
+        throw new Error('Failed to delete product');
+      }
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload products data
+        await loadProducts();
+        setError('');
+        console.log('✅ Product deleted successfully');
       }
     } catch (error) {
-      console.error('Error deleting user:', error);
-      alert('Không thể xóa người dùng');
+      console.error('❌ Error deleting product:', error);
+      setError('Không thể xóa sản phẩm');
     }
   };
 
-  // Product Management Functions
-  const handleCreateProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const updateCategory = async (id: number, categoryData: Partial<Category>) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl('/api/admin/products'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          ...productFormData,
-          price: parseFloat(productFormData.price),
-          stockQuantity: parseInt(productFormData.stockQuantity),
-          categoryId: productFormData.categoryId ? parseInt(productFormData.categoryId) : null
-        })
-      });
-
-      const data = await response.json();
-      
-      if (data.success) {
-        alert('Tạo sản phẩm thành công!');
-        setShowCreateProduct(false);
-        setProductFormData({ productName: '', description: '', price: '', stockQuantity: '', imagePath: '', categoryId: '', status: 'Active' });
-        loadProducts();
-      } else {
-        alert('Lỗi: ' + data.message);
-      }
-    } catch (error) {
-      console.error('Error creating product:', error);
-      alert('Không thể tạo sản phẩm');
-    }
-  };
-
-  const handleUpdateProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!editingProduct) return;
-    
-    try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/products/${editingProduct.ProductID}`), {
+      const response = await fetch(getApiUrl(`/api/admin/categories/${id}`), {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          ...productFormData,
-          price: parseFloat(productFormData.price),
-          stockQuantity: parseInt(productFormData.stockQuantity),
-          categoryId: productFormData.categoryId ? parseInt(productFormData.categoryId) : null
-        })
+        headers: getAuthHeaders(),
+        body: JSON.stringify(categoryData)
       });
-
-      const data = await response.json();
       
-      if (data.success) {
-        alert('Cập nhật sản phẩm thành công!');
-        setEditingProduct(null);
-        setProductFormData({ productName: '', description: '', price: '', stockQuantity: '', imagePath: '', categoryId: '', status: 'Active' });
-        loadProducts();
-      } else {
-        alert('Lỗi: ' + data.message);
+      if (!response.ok) {
+        throw new Error('Failed to update category');
+      }
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload categories data
+        await loadCategories();
+        setError('');
+        console.log('✅ Category updated successfully');
       }
     } catch (error) {
-      console.error('Error updating product:', error);
-      alert('Không thể cập nhật sản phẩm');
+      console.error('❌ Error updating category:', error);
+      setError('Không thể cập nhật danh mục');
     }
   };
 
-  const handleDeleteProduct = async (productId: number) => {
-    if (!confirm(`Bạn có chắc muốn xóa sản phẩm này?`)) {
-      return;
-    }
-    
+  const deleteCategory = async (id: number) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl(`/api/admin/products/${productId}`), {
+      const response = await fetch(getApiUrl(`/api/admin/categories/${id}`), {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: getAuthHeaders()
       });
-
-      const data = await response.json();
       
-      if (data.success) {
-        alert('Xóa sản phẩm thành công!');
-        loadProducts();
-      } else {
-        alert('Lỗi: ' + data.message);
+      if (!response.ok) {
+        throw new Error('Failed to delete category');
+      }
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload categories data
+        await loadCategories();
+        setError('');
+        console.log('✅ Category deleted successfully');
       }
     } catch (error) {
-      console.error('Error deleting product:', error);
-      alert('Không thể xóa sản phẩm');
+      console.error('❌ Error deleting category:', error);
+      setError('Không thể xóa danh mục');
     }
   };
 
-  const openEditProductModal = (product: Product) => {
-    setEditingProduct(product);
-    setProductFormData({
-      productName: product.ProductName,
-      description: product.Description || '',
-      price: product.Price.toString(),
-      stockQuantity: product.StockQuantity.toString(),
-      imagePath: product.ImagePath || '',
-      categoryId: '', // Will be set based on category name
-      status: product.Status
-    });
-  };
-
-  // Category Management Functions
-  const handleCreateCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const updateOrder = async (id: number, orderData: Partial<Order>) => {
     try {
-      const token = AuthChatService.getToken();
-      
-      const response = await fetch(getApiUrl('/api/admin/categories'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(categoryFormData)
+      const response = await fetch(getApiUrl(`/api/admin/orders/${id}`), {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(orderData)
       });
-
-      const data = await response.json();
       
-      if (data.success) {
-        alert('Tạo danh mục thành công!');
-        setShowCreateCategory(false);
-        setCategoryFormData({ categoryName: '', description: '', iconPath: '', status: 'Active' });
-        loadCategories();
-      } else {
-        alert('Lỗi: ' + data.message);
+      if (!response.ok) {
+        throw new Error('Failed to update order');
+      }
+      
+      const result = await response.json();
+      if (result.success) {
+        // Reload orders data
+        await loadOrders();
+        setError('');
+        console.log('✅ Order updated successfully');
       }
     } catch (error) {
-      console.error('Error creating category:', error);
-      alert('Không thể tạo danh mục');
+      console.error('❌ Error updating order:', error);
+      setError('Không thể cập nhật đơn hàng');
     }
   };
 
-  const openEditModal = (user: User) => {
-    setEditingUser(user);
-    setFormData({
-      email: user.Email,
-      fullName: user.FullName,
-      phone: user.Phone || '',
-      address: user.Address || '',
-      password: '',
-      status: user.Status
+  // ===========================================
+  // EDIT COMPONENTS
+  // ===========================================
+
+  const UserEditModal = ({ user, onClose, onSave }: { user: User; onClose: () => void; onSave: (data: Partial<User>) => void }) => {
+    const [formData, setFormData] = useState({
+      fullName: user.fullName,
+      phone: user.phone,
+      address: user.address,
+      status: user.status,
+      role: user.role
     });
-  };
 
-  const closeModals = () => {
-    setShowCreateUser(false);
-    setEditingUser(null);
-    setFormData({ email: '', fullName: '', phone: '', address: '', password: '', status: 'Active' });
-  };
+    const handleSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      onSave(formData);
+      onClose();
+    };
 
-  if (!currentUser || currentUser.email !== 'admin@muji.com') {
     return (
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        height: '50vh',
-        fontSize: '18px',
-        color: '#666',
-        flexDirection: 'column',
-        gap: '20px'
-      }}>
-        <div>🔐 Đang xác thực quyền admin...</div>
-        <div style={{ fontSize: '14px', color: '#999' }}>
-          Nếu bạn là admin, hãy đăng nhập với tài khoản admin@muji.com
-        </div>
-        <button 
-          onClick={() => {
-            // Clear current session and redirect to login
-            sessionStorage.clear();
-            localStorage.clear();
-            window.location.href = '/login';
-          }}
-          style={{
-            padding: '10px 20px',
-            backgroundColor: '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: 'pointer'
-          }}
-        >
-          Đăng nhập Admin
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#f5f5f5' }}>
-      {/* Header */}
-      <div style={{
-        backgroundColor: '#fff',
-        padding: '20px',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-        marginBottom: '20px'
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h1 style={{ margin: 0, color: '#333' }}>Admin Dashboard</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-            <span>Xin chào, {currentUser.name}</span>
-            <button
-              onClick={() => {
-                AuthChatService.logout();
-                window.location.href = '/';
-              }}
-              style={{
-                padding: '8px 16px',
-                backgroundColor: '#dc3545',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              Đăng xuất
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', maxWidth: '1200px', margin: '0 auto', gap: '20px' }}>
-        {/* Sidebar */}
         <div style={{
-          width: '250px',
-          backgroundColor: '#fff',
-          borderRadius: '8px',
-          padding: '20px',
-          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-          height: 'fit-content'
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
         }}>
-          <nav>
-            <div
-              onClick={() => setActiveTab('dashboard')}
-              style={{
-                padding: '12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: activeTab === 'dashboard' ? '#007bff' : 'transparent',
-                color: activeTab === 'dashboard' ? 'white' : '#333',
-                marginBottom: '8px'
-              }}
-            >
-              📊 Dashboard
-            </div>
-            <div
-              onClick={() => setActiveTab('users')}
-              style={{
-                padding: '12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: activeTab === 'users' ? '#007bff' : 'transparent',
-                color: activeTab === 'users' ? 'white' : '#333',
-                marginBottom: '8px'
-              }}
-            >
-              👥 Quản lý người dùng
-            </div>
-            <div
-              onClick={() => setActiveTab('products')}
-              style={{
-                padding: '12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: activeTab === 'products' ? '#007bff' : 'transparent',
-                color: activeTab === 'products' ? 'white' : '#333',
-                marginBottom: '8px'
-              }}
-            >
-              🛒 Quản lý sản phẩm
-            </div>
-            <div
-              onClick={() => setActiveTab('orders')}
-              style={{
-                padding: '12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: activeTab === 'orders' ? '#007bff' : 'transparent',
-                color: activeTab === 'orders' ? 'white' : '#333',
-                marginBottom: '8px'
-              }}
-            >
-              📦 Quản lý đơn hàng
-            </div>
-            <div
-              onClick={() => setActiveTab('settings')}
-              style={{
-                padding: '12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: activeTab === 'settings' ? '#007bff' : 'transparent',
-                color: activeTab === 'settings' ? 'white' : '#333',
-                marginBottom: '8px'
-              }}
-            >
-              ⚙️ Cài đặt hệ thống
-            </div>
-          </nav>
-        </div>
-
-        {/* Main Content */}
-        <div style={{ flex: 1 }}>
-          {activeTab === 'dashboard' && (
-            <div style={{
-              backgroundColor: '#fff',
-              borderRadius: '8px',
-              padding: '20px',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-            }}>
-              <h2>📊 Dashboard Tổng Quan</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px', marginTop: '20px' }}>
-                <div style={{ padding: '20px', backgroundColor: '#e3f2fd', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#1976d2' }}>{users.length}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng người dùng</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#f3e5f5', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#7b1fa2' }}>{users.filter(u => u.Role === 'Customer').length}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Khách hàng</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#e8f5e8', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#388e3c' }}>{users.filter(u => u.Role === 'Agent').length}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Nhân viên</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#fff3e0', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#f57c00' }}>{users.filter(u => u.Status === 'Active').length}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tài khoản hoạt động</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#e8f5e8', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#28a745' }}>{products.length}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Sản phẩm</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#f8d7da', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#dc3545' }}>{orderStats?.totalOrders || 0}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng đơn hàng</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#d1ecf1', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#0c5460' }}>
-                    {orderStats?.totalRevenue ? new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(orderStats.totalRevenue) : '0₫'}
-                  </h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng doanh thu</p>
-                </div>
-                <div style={{ padding: '20px', backgroundColor: '#d4edda', borderRadius: '8px', textAlign: 'center' }}>
-                  <h3 style={{ margin: 0, color: '#155724' }}>{orderStats?.recentOrders || 0}</h3>
-                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Đơn hàng tuần này</p>
-                </div>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '30px',
+          borderRadius: '10px',
+            width: '500px',
+          maxHeight: '80vh',
+          overflow: 'auto'
+          }}>
+          <h3 style={{ marginBottom: '20px', color: '#333' }}>Chỉnh sửa người dùng</h3>
+          
+          <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Họ tên:</label>
+                <input
+                  type="text"
+                  value={formData.fullName}
+                onChange={(e) => setFormData({...formData, fullName: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                required
+                />
               </div>
-              
-              {/* Order Status Overview */}
-              {orderStats && (
-                <div style={{ marginTop: '30px' }}>
-                  <h3>📈 Tình trạng đơn hàng</h3>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginTop: '15px' }}>
-                    <div style={{ padding: '15px', backgroundColor: '#fff3cd', borderRadius: '8px', textAlign: 'center' }}>
-                      <h4 style={{ margin: 0, color: '#856404' }}>{orderStats.pendingOrders}</h4>
-                      <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>Chờ xử lý</p>
-                    </div>
-                    <div style={{ padding: '15px', backgroundColor: '#cce5ff', borderRadius: '8px', textAlign: 'center' }}>
-                      <h4 style={{ margin: 0, color: '#004085' }}>{orderStats.processingOrders}</h4>
-                      <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>Đang xử lý</p>
-                    </div>
-                    <div style={{ padding: '15px', backgroundColor: '#d1ecf1', borderRadius: '8px', textAlign: 'center' }}>
-                      <h4 style={{ margin: 0, color: '#0c5460' }}>{orderStats.shippedOrders}</h4>
-                      <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>Đã gửi</p>
-                    </div>
-                    <div style={{ padding: '15px', backgroundColor: '#d4edda', borderRadius: '8px', textAlign: 'center' }}>
-                      <h4 style={{ margin: 0, color: '#155724' }}>{orderStats.deliveredOrders}</h4>
-                      <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>Đã giao</p>
-                    </div>
-                    <div style={{ padding: '15px', backgroundColor: '#f8d7da', borderRadius: '8px', textAlign: 'center' }}>
-                      <h4 style={{ margin: 0, color: '#721c24' }}>{orderStats.cancelledOrders}</h4>
-                      <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>Đã hủy</p>
-                    </div>
-                  </div>
-                </div>
-              )}
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Số điện thoại:</label>
+                <input
+                  type="text"
+                  value={formData.phone}
+                onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                />
+              </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Địa chỉ:</label>
+              <textarea
+                  value={formData.address}
+                onChange={(e) => setFormData({...formData, address: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px', height: '80px' }}
+                />
+              </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Trạng thái:</label>
+                <select
+                  value={formData.status}
+                onChange={(e) => setFormData({...formData, status: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                >
+                  <option value="Active">Hoạt động</option>
+                  <option value="Inactive">Không hoạt động</option>
+                <option value="Suspended">Tạm khóa</option>
+                </select>
+              </div>
+            
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Vai trò:</label>
+              <select
+                value={formData.role}
+                onChange={(e) => setFormData({...formData, role: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+              >
+                <option value="Customer">Khách hàng</option>
+                <option value="Agent">Nhân viên</option>
+                <option value="Admin">Quản trị viên</option>
+                <option value="SuperAdmin">Siêu quản trị viên</option>
+              </select>
             </div>
-          )}
-
-          {activeTab === 'users' && (
-            <div style={{
-              backgroundColor: '#fff',
-              borderRadius: '8px',
-              padding: '20px',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <h2>👥 Quản lý người dùng</h2>
+            
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
                 <button
-                  onClick={() => setShowCreateUser(true)}
+                  type="button"
+                onClick={onClose}
                   style={{
                     padding: '10px 20px',
-                    backgroundColor: '#28a745',
+                    backgroundColor: '#6c757d',
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',
                     cursor: 'pointer'
                   }}
                 >
-                  ➕ Thêm người dùng
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '10px 20px',
+                  backgroundColor: '#007bff',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                Lưu
                 </button>
               </div>
+            </form>
+          </div>
+        </div>
+    );
+  };
 
-              {_loading ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>
-                  <p>Đang tải...</p>
+  const ProductEditModal = ({ product, onClose, onSave }: { product: Product; onClose: () => void; onSave: (data: Partial<Product>) => void }) => {
+    const [formData, setFormData] = useState({
+      productName: product.name,
+      description: product.description,
+      longDescription: product.longDescription,
+      categoryId: product.categoryId,
+      price: product.price,
+      originalPrice: product.originalPrice,
+      stockQuantity: product.stockQuantity,
+      isInStock: product.isInStock,
+      isActive: product.isActive,
+      isFeatured: product.isFeatured
+    });
+
+    const handleSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      onSave(formData);
+      onClose();
+    };
+
+    return (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '30px',
+          borderRadius: '10px',
+          width: '600px',
+          maxHeight: '80vh',
+          overflow: 'auto'
+        }}>
+          <h3 style={{ marginBottom: '20px', color: '#333' }}>Chỉnh sửa sản phẩm</h3>
+          
+          <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Tên sản phẩm:</label>
+                <input
+                type="text"
+                value={formData.productName}
+                onChange={(e) => setFormData({...formData, productName: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                required
+                />
+              </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Mô tả ngắn:</label>
+                <input
+                  type="text"
+                value={formData.description}
+                onChange={(e) => setFormData({...formData, description: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                />
+              </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Mô tả dài:</label>
+              <textarea
+                value={formData.longDescription}
+                onChange={(e) => setFormData({...formData, longDescription: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px', height: '80px' }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Danh mục:</label>
+              <select
+                value={formData.categoryId}
+                onChange={(e) => setFormData({...formData, categoryId: parseInt(e.target.value)})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+              >
+                {categories.map(cat => (
+                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Giá:</label>
+                <input
+                  type="number"
+                  value={formData.price}
+                  onChange={(e) => setFormData({...formData, price: parseFloat(e.target.value)})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                  required
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Giá gốc:</label>
+                <input
+                  type="number"
+                  value={formData.originalPrice}
+                  onChange={(e) => setFormData({...formData, originalPrice: parseFloat(e.target.value)})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                />
+              </div>
+            </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Số lượng tồn kho:</label>
+                <input
+                type="number"
+                value={formData.stockQuantity}
+                onChange={(e) => setFormData({...formData, stockQuantity: parseInt(e.target.value)})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                required
+                />
+              </div>
+            
+            <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.isInStock}
+                  onChange={(e) => setFormData({...formData, isInStock: e.target.checked})}
+                />
+                Còn hàng
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.isActive}
+                  onChange={(e) => setFormData({...formData, isActive: e.target.checked})}
+                />
+                Hoạt động
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.isFeatured}
+                  onChange={(e) => setFormData({...formData, isFeatured: e.target.checked})}
+                />
+                Nổi bật
+              </label>
+              </div>
+            
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                onClick={onClose}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#007bff',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                Lưu
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+    );
+  };
+
+  const CategoryEditModal = ({ category, onClose, onSave }: { category: Category; onClose: () => void; onSave: (data: Partial<Category>) => void }) => {
+    const [formData, setFormData] = useState({
+      name: category.name,
+      description: category.description || ''
+    });
+
+    const handleSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      onSave(formData);
+      onClose();
+    };
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10000
+      }}>
+        <div style={{
+          backgroundColor: 'white',
+          padding: '30px',
+          borderRadius: '10px',
+          width: '500px',
+          maxHeight: '80vh',
+          overflow: 'auto'
+        }}>
+          <h3 style={{ marginBottom: '20px', color: '#333' }}>Chỉnh sửa danh mục</h3>
+          
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Tên danh mục:</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({...formData, name: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                required
+              />
+            </div>
+            
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Mô tả:</label>
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({...formData, description: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px', height: '100px' }}
+                placeholder="Nhập mô tả danh mục..."
+              />
+            </div>
+            
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={onClose}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#6c757d',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#007bff',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Lưu
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const OrderEditModal = ({ order, onClose, onSave }: { order: Order; onClose: () => void; onSave: (data: Partial<Order>) => void }) => {
+    console.log('🔧 Admin: OrderEditModal rendered with order:', order);
+    const [formData, setFormData] = useState({
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      notes: order.notes || ''
+    });
+
+    const handleSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      onSave(formData);
+      onClose();
+    };
+
+    return (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '30px',
+          borderRadius: '10px',
+          width: '500px',
+          maxHeight: '80vh',
+          overflow: 'auto'
+        }}>
+          <h3 style={{ marginBottom: '20px', color: '#333' }}>Chỉnh sửa đơn hàng</h3>
+          
+          <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Trạng thái đơn hàng:</label>
+                <select
+                value={formData.status}
+                onChange={(e) => setFormData({...formData, status: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                >
+                <option value="Pending">Chờ xử lý</option>
+                <option value="Processing">Đang xử lý</option>
+                <option value="Shipped">Đã gửi hàng</option>
+                <option value="Delivered">Đã giao hàng</option>
+                <option value="Cancelled">Đã hủy</option>
+                <option value="Returned">Đã trả hàng</option>
+                </select>
+              </div>
+            
+              <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Trạng thái thanh toán:</label>
+                <select
+                value={formData.paymentStatus}
+                onChange={(e) => setFormData({...formData, paymentStatus: e.target.value})}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                >
+                <option value="Pending">Chờ thanh toán</option>
+                <option value="Paid">Đã thanh toán</option>
+                <option value="Failed">Thanh toán thất bại</option>
+                <option value="Refunded">Đã hoàn tiền</option>
+                <option value="Partial">Thanh toán một phần</option>
+                </select>
+              </div>
+            
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Ghi chú:</label>
+              <textarea
+                value={formData.notes}
+                onChange={(e) => setFormData({...formData, notes: e.target.value})}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px', height: '100px' }}
+                placeholder="Nhập ghi chú về đơn hàng..."
+              />
+            </div>
+            
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                onClick={onClose}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '10px 20px',
+                  backgroundColor: '#007bff',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                Lưu
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+    );
+  };
+
+  // ===========================================
+  // RENDER FUNCTIONS
+  // ===========================================
+
+  const renderDashboard = () => {
+    if (!stats) {
+    return (
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '18px', color: '#666' }}>Đang tải thống kê...</div>
+      </div>
+    );
+  }
+
+  return (
+      <div>
+        <h2 style={{ marginBottom: '20px', color: '#333' }}>Dashboard Tổng Quan</h2>
+        
+        {/* Statistics Cards */}
+        <div style={{
+          display: 'grid', 
+          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', 
+          gap: '20px', 
+          marginBottom: '30px' 
+        }}>
+          {/* Users Stats */}
+          <div style={{
+          padding: '20px',
+            backgroundColor: '#e3f2fd', 
+            borderRadius: '8px',
+            textAlign: 'center' 
+          }}>
+            <h3 style={{ margin: 0, color: '#1976d2', fontSize: '24px' }}>{stats.users.total}</h3>
+            <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng người dùng</p>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+              Khách hàng: {stats.users.customers} | Nhân viên: {stats.users.agents} | Admin: {stats.users.admins}
+              </div>
+              </div>
+
+          {/* Products Stats */}
+            <div style={{
+              padding: '20px',
+            backgroundColor: '#e8f5e8', 
+            borderRadius: '8px', 
+            textAlign: 'center' 
+          }}>
+            <h3 style={{ margin: 0, color: '#28a745', fontSize: '24px' }}>{stats.products.total}</h3>
+            <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng sản phẩm</p>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+              Hoạt động: {stats.products.active} | Còn hàng: {stats.products.inStock}
                 </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
+                </div>
+
+          {/* Orders Stats */}
+            <div style={{
+              padding: '20px',
+            backgroundColor: '#fff3e0', 
+            borderRadius: '8px', 
+            textAlign: 'center' 
+          }}>
+            <h3 style={{ margin: 0, color: '#f57c00', fontSize: '24px' }}>{stats.orders.total}</h3>
+                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng đơn hàng</p>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+              Tuần này: {stats.orders.thisWeek} | Tháng này: {stats.orders.thisMonth}
+              </div>
+              </div>
+
+          {/* Revenue Stats */}
+          <div style={{ 
+            padding: '20px', 
+            backgroundColor: '#f3e5f5', 
+            borderRadius: '8px', 
+            textAlign: 'center' 
+          }}>
+            <h3 style={{ margin: 0, color: '#7b1fa2', fontSize: '24px' }}>
+              {formatCurrency(stats.orders.totalRevenue)}
+                  </h3>
+                  <p style={{ margin: '8px 0 0 0', color: '#666' }}>Tổng doanh thu</p>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+              Đã thanh toán: {stats.orders.delivered}
+              </div>
+              </div>
+              </div>
+              
+              {/* Order Status Overview */}
+                <div style={{ marginTop: '30px' }}>
+          <h3 style={{ marginBottom: '15px', color: '#333' }}>Trạng thái đơn hàng</h3>
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', 
+            gap: '15px' 
+          }}>
+            <div style={{ 
+              padding: '15px', 
+              backgroundColor: '#fff3cd', 
+              borderRadius: '6px', 
+              textAlign: 'center' 
+            }}>
+              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#856404' }}>
+                {stats.orders.pending}
+                    </div>
+              <div style={{ fontSize: '12px', color: '#856404' }}>Chờ xử lý</div>
+                    </div>
+            <div style={{ 
+              padding: '15px', 
+              backgroundColor: '#d1ecf1', 
+              borderRadius: '6px', 
+              textAlign: 'center' 
+            }}>
+              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#0c5460' }}>
+                {stats.orders.processing}
+                    </div>
+              <div style={{ fontSize: '12px', color: '#0c5460' }}>Đang xử lý</div>
+                    </div>
+            <div style={{ 
+              padding: '15px', 
+              backgroundColor: '#e2e3e5', 
+              borderRadius: '6px', 
+              textAlign: 'center' 
+            }}>
+              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#383d41' }}>
+                {stats.orders.shipped}
+                    </div>
+              <div style={{ fontSize: '12px', color: '#383d41' }}>Đã giao</div>
+                  </div>
+            <div style={{ 
+              padding: '15px', 
+              backgroundColor: '#d4edda', 
+              borderRadius: '6px', 
+              textAlign: 'center' 
+            }}>
+              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#155724' }}>
+                {stats.orders.delivered}
+                </div>
+              <div style={{ fontSize: '12px', color: '#155724' }}>Hoàn thành</div>
+            </div>
+        </div>
+      </div>
+      
+    </div>
+  );
+};
+
+  const renderUsers = () => (
+    <div>
+      <h2 style={{ marginBottom: '20px', color: '#333' }}>Quản lý người dùng</h2>
+            <div style={{
+        backgroundColor: 'white', 
+              borderRadius: '8px',
+        overflow: 'hidden',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+            }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ backgroundColor: '#f8f9fa' }}>
@@ -1099,19 +1191,19 @@ const AdminDashboardPage: React.FC = () => {
                     </thead>
                     <tbody>
                       {users.map((user) => (
-                        <tr key={user.UserID}>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.UserID}</td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.Email}</td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.FullName}</td>
+              <tr key={user.id}>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.id}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.email}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{user.fullName}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
                             <span style={{
                               padding: '4px 8px',
                               borderRadius: '4px',
                               fontSize: '12px',
-                              backgroundColor: user.Role === 'Admin' ? '#dc3545' : user.Role === 'Agent' ? '#28a745' : '#007bff',
+                    backgroundColor: user.role === 'Admin' ? '#dc3545' : user.role === 'Agent' ? '#007bff' : '#28a745',
                               color: 'white'
                             }}>
-                              {user.Role}
+                    {user.role}
                             </span>
                           </td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
@@ -1119,1008 +1211,277 @@ const AdminDashboardPage: React.FC = () => {
                               padding: '4px 8px',
                               borderRadius: '4px',
                               fontSize: '12px',
-                              backgroundColor: user.Status === 'Active' ? '#28a745' : '#dc3545',
-                              color: 'white'
+                    backgroundColor: user.status === 'Active' ? '#d4edda' : '#f8d7da',
+                    color: user.status === 'Active' ? '#155724' : '#721c24'
                             }}>
-                              {user.Status}
+                    {user.status}
                             </span>
                           </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{formatDate(user.createdAt)}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            {formatDate(user.CreatedAt)}
-                          </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <button
-                              onClick={() => openEditModal(user)}
-                              style={{
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                <button
+                      onClick={() => setEditingUser(user)}
+                  style={{
                                 padding: '4px 8px',
                                 backgroundColor: '#007bff',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
                                 cursor: 'pointer',
-                                marginRight: '8px'
-                              }}
-                            >
-                              ✏️ Sửa
-                            </button>
-                            <button
-                              onClick={() => handleDeleteUser(user.UserID, user.Email)}
-                              style={{
+                        fontSize: '12px'
+                  }}
+                >
+                      Sửa
+                </button>
+                <button
+                      onClick={() => {
+                        if (window.confirm('Bạn có chắc muốn vô hiệu hóa người dùng này?')) {
+                          deleteUser(user.id);
+                        }
+                      }}
+                  style={{
                                 padding: '4px 8px',
                                 backgroundColor: '#dc3545',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              🗑️ Xóa
-                            </button>
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                  }}
+                >
+                      Xóa
+                </button>
+              </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-            </div>
-          )}
+          </div>
+        </div>
+  );
 
-          {activeTab === 'products' && (
-            <div style={{
-              backgroundColor: '#fff',
-              borderRadius: '8px',
-              padding: '20px',
+  const renderProducts = () => (
+    <div>
+      <h2 style={{ marginBottom: '20px', color: '#333' }}>Quản lý sản phẩm</h2>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+        overflow: 'hidden',
               boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <h2>🛒 Quản lý sản phẩm {productsLoading && <span style={{ color: '#007bff' }}>(Đang tải...)</span>}</h2>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button
-                    onClick={() => setShowCreateCategory(true)}
-                    style={{
-                      padding: '10px 20px',
-                      backgroundColor: '#17a2b8',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    📁 Thêm danh mục
-                  </button>
-                  <button
-                    onClick={() => setShowCreateProduct(true)}
-                    style={{
-                      padding: '10px 20px',
-                      backgroundColor: '#28a745',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    ➕ Thêm sản phẩm
-                  </button>
-                </div>
-              </div>
-
-              {_loading ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>
-                  <p>Đang tải...</p>
-                </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ backgroundColor: '#f8f9fa' }}>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>ID</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Hình ảnh</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Tên sản phẩm</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Danh mục</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Giá</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Tồn kho</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Danh mục</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Trạng thái</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Ngày tạo</th>
                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thao tác</th>
                       </tr>
                     </thead>
                     <tbody>
                       {products.map((product) => (
-                        <tr key={product.ProductID}>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.ProductID}</td>
+              <tr key={product.id}>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.id}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
                             <img 
-                              src={product.ImagePath || '/images/products/default.jpg'} 
-                              alt={product.ProductName}
+                    src={product.imagePath || '/images/products/default.jpg'} 
+                    alt={product.name}
                               style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '4px' }}
                               onError={(e) => {
-                                e.currentTarget.src = '/images/products/default.jpg';
+                      (e.target as HTMLImageElement).src = '/images/products/default.jpg';
                               }}
                             />
                           </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.ProductName}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(product.Price)}
+                  <div style={{ fontWeight: '500' }}>{product.name}</div>
+                  <div style={{ fontSize: '12px', color: '#666' }}>{product.description}</div>
                           </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.StockQuantity}</td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.CategoryName || 'Chưa phân loại'}</td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <span style={{
-                              padding: '4px 8px',
-                              borderRadius: '4px',
-                              fontSize: '12px',
-                              backgroundColor: product.Status === 'Active' ? '#28a745' : '#dc3545',
-                              color: 'white'
-                            }}>
-                              {product.Status}
-                            </span>
-                          </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            {formatDate(product.CreatedAt)}
-                          </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <button
-                              onClick={() => openEditProductModal(product)}
-                              style={{
-                                padding: '4px 8px',
-                                backgroundColor: '#007bff',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                marginRight: '8px'
-                              }}
-                            >
-                              ✏️ Sửa
-                            </button>
-                            <button
-                              onClick={() => handleDeleteProduct(product.ProductID)}
-                              style={{
-                                padding: '4px 8px',
-                                backgroundColor: '#dc3545',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              🗑️ Xóa
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'orders' && (
-            <div style={{
-              backgroundColor: '#fff',
-              borderRadius: '8px',
-              padding: '20px',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-            }}>
-              <h2>📦 Quản lý đơn hàng</h2>
-              
-              {_loading ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>
-                  <p>Đang tải...</p>
-                </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ backgroundColor: '#f8f9fa' }}>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Mã đơn</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Khách hàng</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Tổng tiền</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Trạng thái</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Phương thức</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Ngày đặt</th>
-                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thao tác</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orders.map((order) => (
-                        <tr key={order.OrderID}>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{order.OrderNumber}</td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <div>
-                              <div style={{ fontWeight: '500' }}>{order.CustomerName}</div>
-                              <div style={{ fontSize: '12px', color: '#666' }}>{order.CustomerEmail}</div>
-                            </div>
-                          </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(order.TotalAmount)}
-                          </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.categoryName}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{formatCurrency(product.price)}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{product.stockQuantity}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
                             <span style={{
                               padding: '4px 8px',
                               borderRadius: '4px',
                               fontSize: '12px',
-                              backgroundColor: 
-                                order.Status === 'Pending' ? '#fff3cd' :
-                                order.Status === 'Processing' ? '#cce5ff' :
-                                order.Status === 'Shipped' ? '#d1ecf1' :
-                                order.Status === 'Delivered' ? '#d4edda' :
-                                order.Status === 'Cancelled' ? '#f8d7da' : '#e2e3e5',
-                              color: 
-                                order.Status === 'Pending' ? '#856404' :
-                                order.Status === 'Processing' ? '#004085' :
-                                order.Status === 'Shipped' ? '#0c5460' :
-                                order.Status === 'Delivered' ? '#155724' :
-                                order.Status === 'Cancelled' ? '#721c24' : '#383d41'
+                    backgroundColor: product.isActive ? '#d4edda' : '#f8d7da',
+                    color: product.isActive ? '#155724' : '#721c24'
                             }}>
-                              {order.Status}
+                    {product.isActive ? 'Hoạt động' : 'Không hoạt động'}
                             </span>
                           </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                <button
+                      onClick={() => setEditingProduct(product)}
+                  style={{
+                        padding: '4px 8px',
+                        backgroundColor: '#007bff',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                  }}
+                >
+                      Sửa
+                </button>
+                <button
+                      onClick={() => {
+                        if (window.confirm('Bạn có chắc muốn vô hiệu hóa sản phẩm này?')) {
+                          deleteProduct(product.id);
+                        }
+                      }}
+                  style={{
+                        padding: '4px 8px',
+                        backgroundColor: '#dc3545',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                  }}
+                >
+                      Xóa
+                </button>
+              </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+          </div>
+        </div>
+  );
+
+  const renderCategories = () => (
+    <div>
+      <h2 style={{ marginBottom: '20px', color: '#333' }}>Quản lý danh mục</h2>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+        overflow: 'hidden',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+      }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ backgroundColor: '#f8f9fa' }}>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>ID</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Tên danh mục</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Mô tả</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thứ tự</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Trạng thái</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Ngày tạo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((category) => (
+              <tr key={category.id}>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{category.id}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <div>
-                              <div style={{ fontSize: '12px' }}>💳 {order.PaymentMethod}</div>
-                              <div style={{ fontSize: '12px', color: '#666' }}>🚚 {order.ShippingMethod}</div>
-                            </div>
+                  <div style={{ fontWeight: '500' }}>{category.name}</div>
                           </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{category.description}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{category.sortOrder}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            {formatDate(order.CreatedAt)}
-                          </td>
-                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
-                            <button
-                              onClick={() => loadOrderDetails(order.OrderID)}
-                              style={{
+                  <span style={{ 
                                 padding: '4px 8px',
-                                backgroundColor: '#007bff',
-                                color: 'white',
-                                border: 'none',
                                 borderRadius: '4px',
-                                cursor: 'pointer',
-                                marginRight: '8px'
-                              }}
-                            >
-                              👁️ Xem
-                            </button>
-                            <select
-                              onChange={(e) => {
-                                if (e.target.value && e.target.value !== order.Status) {
-                                  updateOrderStatus(order.OrderID, e.target.value);
-                                }
-                              }}
-                              value={order.Status}
-                              style={{
-                                padding: '4px 8px',
-                                border: '1px solid #ddd',
-                                borderRadius: '4px',
-                                fontSize: '12px'
-                              }}
-                            >
-                              <option value="Pending">Chờ xử lý</option>
-                              <option value="Processing">Đang xử lý</option>
-                              <option value="Shipped">Đã gửi</option>
-                              <option value="Delivered">Đã giao</option>
-                              <option value="Cancelled">Đã hủy</option>
-                              <option value="Returned">Đã trả</option>
-                            </select>
+                    fontSize: '12px',
+                    backgroundColor: category.isActive ? '#d4edda' : '#f8d7da',
+                    color: category.isActive ? '#155724' : '#721c24'
+                  }}>
+                    {category.isActive ? 'Hoạt động' : 'Không hoạt động'}
+                  </span>
                           </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{formatDate(category.createdAt)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
-            </div>
-          )}
+                </div>
+  );
 
-          {activeTab === 'settings' && (
+  const renderOrders = () => (
+    <div>
+      <h2 style={{ marginBottom: '20px', color: '#333' }}>Quản lý đơn hàng</h2>
             <div style={{
-              backgroundColor: '#fff',
+        backgroundColor: 'white', 
               borderRadius: '8px',
-              padding: '20px',
+        overflow: 'hidden',
               boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
             }}>
-              <h2>⚙️ Cài đặt hệ thống</h2>
-              <p style={{ color: '#666' }}>Chức năng đang được phát triển...</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Create User Modal */}
-      {showCreateUser && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '500px',
-            maxWidth: '90vw'
-          }}>
-            <h3>Tạo người dùng mới</h3>
-            <form onSubmit={handleCreateUser}>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Email *</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Họ và tên *</label>
-                <input
-                  type="text"
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Số điện thoại</label>
-                <input
-                  type="text"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Địa chỉ</label>
-                <input
-                  type="text"
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Mật khẩu *</label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Trạng thái</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="Active">Hoạt động</option>
-                  <option value="Inactive">Không hoạt động</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={closeModals}
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#28a745',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Tạo người dùng
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Edit User Modal */}
-      {editingUser && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '500px',
-            maxWidth: '90vw'
-          }}>
-            <h3>Cập nhật người dùng</h3>
-            <form onSubmit={handleUpdateUser}>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Email *</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Họ và tên *</label>
-                <input
-                  type="text"
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Số điện thoại</label>
-                <input
-                  type="text"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Địa chỉ</label>
-                <input
-                  type="text"
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Mật khẩu mới (để trống nếu không đổi)</label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Trạng thái</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="Active">Hoạt động</option>
-                  <option value="Inactive">Không hoạt động</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={closeModals}
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#007bff',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Cập nhật
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Create Product Modal */}
-      {showCreateProduct && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '600px',
-            maxWidth: '90vw',
-            maxHeight: '90vh',
-            overflowY: 'auto'
-          }}>
-            <h3>Tạo sản phẩm mới</h3>
-            <form onSubmit={handleCreateProduct}>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Tên sản phẩm *</label>
-                <input
-                  type="text"
-                  value={productFormData.productName}
-                  onChange={(e) => setProductFormData({ ...productFormData, productName: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Mô tả</label>
-                <textarea
-                  value={productFormData.description}
-                  onChange={(e) => setProductFormData({ ...productFormData, description: e.target.value })}
-                  rows={3}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', marginBottom: '5px' }}>Giá *</label>
-                  <input
-                    type="number"
-                    value={productFormData.price}
-                    onChange={(e) => setProductFormData({ ...productFormData, price: e.target.value })}
-                    required
-                    min="0"
-                    step="0.01"
-                    style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', marginBottom: '5px' }}>Tồn kho *</label>
-                  <input
-                    type="number"
-                    value={productFormData.stockQuantity}
-                    onChange={(e) => setProductFormData({ ...productFormData, stockQuantity: e.target.value })}
-                    required
-                    min="0"
-                    style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                  />
-                </div>
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Danh mục</label>
-                <select
-                  value={productFormData.categoryId}
-                  onChange={(e) => setProductFormData({ ...productFormData, categoryId: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="">Chọn danh mục</option>
-                  {categories.map((category) => (
-                    <option key={category.CategoryID} value={category.CategoryID}>
-                      {category.CategoryName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Đường dẫn hình ảnh</label>
-                <input
-                  type="text"
-                  value={productFormData.imagePath}
-                  onChange={(e) => setProductFormData({ ...productFormData, imagePath: e.target.value })}
-                  placeholder="/images/products/product-name.jpg"
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Trạng thái</label>
-                <select
-                  value={productFormData.status}
-                  onChange={(e) => setProductFormData({ ...productFormData, status: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="Active">Hoạt động</option>
-                  <option value="Inactive">Không hoạt động</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCreateProduct(false);
-                    setProductFormData({ productName: '', description: '', price: '', stockQuantity: '', imagePath: '', categoryId: '', status: 'Active' });
-                  }}
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#28a745',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Tạo sản phẩm
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Product Modal */}
-      {editingProduct && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '600px',
-            maxWidth: '90vw',
-            maxHeight: '90vh',
-            overflowY: 'auto'
-          }}>
-            <h3>Cập nhật sản phẩm</h3>
-            <form onSubmit={handleUpdateProduct}>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Tên sản phẩm *</label>
-                <input
-                  type="text"
-                  value={productFormData.productName}
-                  onChange={(e) => setProductFormData({ ...productFormData, productName: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Mô tả</label>
-                <textarea
-                  value={productFormData.description}
-                  onChange={(e) => setProductFormData({ ...productFormData, description: e.target.value })}
-                  rows={3}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', marginBottom: '5px' }}>Giá *</label>
-                  <input
-                    type="number"
-                    value={productFormData.price}
-                    onChange={(e) => setProductFormData({ ...productFormData, price: e.target.value })}
-                    required
-                    min="0"
-                    step="0.01"
-                    style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', marginBottom: '5px' }}>Tồn kho *</label>
-                  <input
-                    type="number"
-                    value={productFormData.stockQuantity}
-                    onChange={(e) => setProductFormData({ ...productFormData, stockQuantity: e.target.value })}
-                    required
-                    min="0"
-                    style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                  />
-                </div>
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Danh mục</label>
-                <select
-                  value={productFormData.categoryId}
-                  onChange={(e) => setProductFormData({ ...productFormData, categoryId: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="">Chọn danh mục</option>
-                  {categories.map((category) => (
-                    <option key={category.CategoryID} value={category.CategoryID}>
-                      {category.CategoryName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Đường dẫn hình ảnh</label>
-                <input
-                  type="text"
-                  value={productFormData.imagePath}
-                  onChange={(e) => setProductFormData({ ...productFormData, imagePath: e.target.value })}
-                  placeholder="/images/products/product-name.jpg"
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Trạng thái</label>
-                <select
-                  value={productFormData.status}
-                  onChange={(e) => setProductFormData({ ...productFormData, status: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="Active">Hoạt động</option>
-                  <option value="Inactive">Không hoạt động</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingProduct(null);
-                    setProductFormData({ productName: '', description: '', price: '', stockQuantity: '', imagePath: '', categoryId: '', status: 'Active' });
-                  }}
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#007bff',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Cập nhật
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Create Category Modal */}
-      {showCreateCategory && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '500px',
-            maxWidth: '90vw'
-          }}>
-            <h3>Tạo danh mục mới</h3>
-            <form onSubmit={handleCreateCategory}>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Tên danh mục *</label>
-                <input
-                  type="text"
-                  value={categoryFormData.categoryName}
-                  onChange={(e) => setCategoryFormData({ ...categoryFormData, categoryName: e.target.value })}
-                  required
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Mô tả</label>
-                <textarea
-                  value={categoryFormData.description}
-                  onChange={(e) => setCategoryFormData({ ...categoryFormData, description: e.target.value })}
-                  rows={3}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Đường dẫn icon</label>
-                <input
-                  type="text"
-                  value={categoryFormData.iconPath}
-                  onChange={(e) => setCategoryFormData({ ...categoryFormData, iconPath: e.target.value })}
-                  placeholder="/images/categories/category-name.jpg"
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                />
-              </div>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px' }}>Trạng thái</label>
-                <select
-                  value={categoryFormData.status}
-                  onChange={(e) => setCategoryFormData({ ...categoryFormData, status: e.target.value })}
-                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-                >
-                  <option value="Active">Hoạt động</option>
-                  <option value="Inactive">Không hoạt động</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCreateCategory(false);
-                    setCategoryFormData({ categoryName: '', description: '', iconPath: '', status: 'Active' });
-                  }}
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    padding: '10px 20px',
-                    backgroundColor: '#17a2b8',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Tạo danh mục
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Order Details Modal */}
-      {showOrderDetails && selectedOrder && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            width: '800px',
-            maxWidth: '90vw',
-            maxHeight: '90vh',
-            overflowY: 'auto'
-          }}>
-            <h3>Chi tiết đơn hàng #{selectedOrder.OrderNumber}</h3>
-            
-            {/* Order Info */}
-            <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '8px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                <div>
-                  <h4 style={{ margin: '0 0 10px 0' }}>Thông tin khách hàng</h4>
-                  <p style={{ margin: '5px 0' }}><strong>Tên:</strong> {selectedOrder.CustomerName}</p>
-                  <p style={{ margin: '5px 0' }}><strong>Email:</strong> {selectedOrder.CustomerEmail}</p>
-                  <p style={{ margin: '5px 0' }}><strong>Địa chỉ:</strong> {selectedOrder.ShippingAddress}</p>
-                </div>
-                <div>
-                  <h4 style={{ margin: '0 0 10px 0' }}>Thông tin đơn hàng</h4>
-                  <p style={{ margin: '5px 0' }}><strong>Ngày đặt:</strong> {new Date(selectedOrder.CreatedAt).toLocaleString('vi-VN')}</p>
-                  <p style={{ margin: '5px 0' }}><strong>Tổng tiền:</strong> {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(selectedOrder.TotalAmount)}</p>
-                  <p style={{ margin: '5px 0' }}><strong>Thanh toán:</strong> {selectedOrder.PaymentMethod}</p>
-                  <p style={{ margin: '5px 0' }}><strong>Vận chuyển:</strong> {selectedOrder.ShippingMethod}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Order Items */}
-            <div style={{ marginBottom: '20px' }}>
-              <h4>Danh sách sản phẩm</h4>
-              <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f8f9fa' }}>
-                      <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Sản phẩm</th>
-                      <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Giá</th>
-                      <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Số lượng</th>
-                      <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thành tiền</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Mã đơn</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Khách hàng</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Trạng thái</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thanh toán</th>
+              <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Tổng tiền</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Ngày đặt</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #dee2e6' }}>Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {orderItems.map((item) => (
-                      <tr key={item.OrderItemID}>
-                        <td style={{ padding: '10px', borderBottom: '1px solid #dee2e6' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <img 
-                              src={item.ImagePath || '/images/products/default.jpg'} 
-                              alt={item.ProductName}
-                              style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '4px' }}
-                              onError={(e) => {
-                                e.currentTarget.src = '/images/products/default.jpg';
-                              }}
-                            />
-                            <span>{item.ProductName}</span>
-                          </div>
+                      {orders.map((order) => (
+              <tr key={order.id}>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{order.orderNumber}</td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
+                  <div style={{ fontWeight: '500' }}>{order.customerName}</div>
+                  <div style={{ fontSize: '12px', color: '#666' }}>{order.customerEmail}</div>
                         </td>
-                        <td style={{ padding: '10px', borderBottom: '1px solid #dee2e6' }}>
-                          {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.ProductPrice)}
+                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
+                            <span style={{
+                              padding: '4px 8px',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                    backgroundColor: getStatusColor(order.status) + '20',
+                    color: getStatusColor(order.status)
+                  }}>
+                    {order.status}
+                            </span>
                         </td>
-                        <td style={{ padding: '10px', borderBottom: '1px solid #dee2e6' }}>{item.Quantity}</td>
-                        <td style={{ padding: '10px', borderBottom: '1px solid #dee2e6' }}>
-                          {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.SubTotal)}
+                          <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
+                  <span style={{ 
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                    fontSize: '12px',
+                    backgroundColor: order.paymentStatus === 'Paid' ? '#d4edda' : '#fff3cd',
+                    color: order.paymentStatus === 'Paid' ? '#155724' : '#856404'
+                  }}>
+                    {order.paymentStatus}
+                  </span>
+                          </td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{formatCurrency(order.totalAmount)}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>{formatDate(order.createdAt)}</td>
+                <td style={{ padding: '12px', borderBottom: '1px solid #dee2e6' }}>
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                    <button
+                      onClick={() => {
+                        console.log('🔧 Admin: Edit order clicked for order:', order);
+                        setEditingOrder(order);
+                      }}
+                      style={{
+                        padding: '4px 8px',
+                        backgroundColor: '#007bff',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      Sửa
+                    </button>
+                  </div>
                         </td>
                       </tr>
                     ))}
@@ -2128,38 +1489,138 @@ const AdminDashboardPage: React.FC = () => {
                 </table>
               </div>
             </div>
+  );
 
-            {/* Notes */}
-            {selectedOrder.Notes && (
-              <div style={{ marginBottom: '20px' }}>
-                <h4>Ghi chú</h4>
-                <p style={{ padding: '10px', backgroundColor: '#f8f9fa', borderRadius: '4px', margin: 0 }}>
-                  {selectedOrder.Notes}
-                </p>
+  // ===========================================
+  // MAIN RENDER
+  // ===========================================
+
+  return (
+        <div style={{
+      minHeight: '100vh', 
+      backgroundColor: '#f8f9fa',
+      padding: '20px'
+    }}>
+      {/* Header */}
+          <div style={{
+            backgroundColor: 'white',
+        padding: '20px', 
+            borderRadius: '8px',
+        marginBottom: '20px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+      }}>
+        <h1 style={{ margin: 0, color: '#333' }}>MUJI Admin Dashboard</h1>
+        <p style={{ margin: '8px 0 0 0', color: '#666' }}>Quản lý hệ thống</p>
+              </div>
+
+      {/* Navigation */}
+          <div style={{
+            backgroundColor: 'white',
+        padding: '20px', 
+            borderRadius: '8px',
+        marginBottom: '20px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+      }}>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          {[
+            { key: 'dashboard', label: '📊 Dashboard' },
+            { key: 'users', label: '👥 Người dùng' },
+            { key: 'products', label: '🛒 Sản phẩm' },
+            { key: 'categories', label: '📁 Danh mục' },
+            { key: 'orders', label: '📦 Đơn hàng' },
+            { key: 'ratings', label: '⭐ Đánh giá chat' }
+          ].map((tab) => (
+              <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+                style={{
+                  padding: '10px 20px',
+                  border: 'none',
+                borderRadius: '6px',
+                backgroundColor: activeTab === tab.key ? '#007bff' : '#f8f9fa',
+                color: activeTab === tab.key ? 'white' : '#333',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500'
+              }}
+            >
+              {tab.label}
+              </button>
+          ))}
+            </div>
+          </div>
+
+      {/* Content */}
+          <div style={{
+            backgroundColor: 'white',
+        padding: '20px', 
+            borderRadius: '8px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+      }}>
+        {error && (
+        <div style={{
+            backgroundColor: '#f8d7da', 
+            color: '#721c24', 
+            padding: '12px', 
+            borderRadius: '4px', 
+            marginBottom: '20px' 
+          }}>
+            {error}
+        </div>
+      )}
+
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px' }}>
+            <div style={{ fontSize: '18px', color: '#666' }}>Đang tải...</div>
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => {
-                  setShowOrderDetails(false);
-                  setSelectedOrder(null);
-                  setOrderItems([]);
-                }}
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: '#6c757d',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-              >
-                Đóng
-              </button>
-            </div>
-          </div>
-        </div>
+        {!loading && (
+          <>
+            {activeTab === 'dashboard' && renderDashboard()}
+            {activeTab === 'users' && renderUsers()}
+            {activeTab === 'products' && renderProducts()}
+            {activeTab === 'categories' && renderCategories()}
+            {activeTab === 'orders' && renderOrders()}
+            {activeTab === 'ratings' && <RatingManagementPage />}
+          </>
+        )}
+      </div>
+
+      {/* Edit Modals - Moved outside main content */}
+      {editingUser && (
+        <UserEditModal
+          user={editingUser}
+          onClose={() => setEditingUser(null)}
+          onSave={(data) => updateUser(editingUser.id, data)}
+        />
+      )}
+      {editingProduct && (
+        <ProductEditModal
+          product={editingProduct}
+          onClose={() => setEditingProduct(null)}
+          onSave={(data) => updateProduct(editingProduct.id, data)}
+        />
+      )}
+      {editingCategory && (
+        <CategoryEditModal
+          category={editingCategory}
+          onClose={() => setEditingCategory(null)}
+          onSave={(data) => updateCategory(editingCategory.id, data)}
+        />
+      )}
+      {editingOrder && (
+        <OrderEditModal
+          order={editingOrder}
+          onClose={() => {
+            console.log('🔧 Admin: Closing order edit modal');
+            setEditingOrder(null);
+          }}
+          onSave={(data) => {
+            console.log('🔧 Admin: Saving order data:', data);
+            updateOrder(editingOrder.id, data);
+          }}
+        />
       )}
     </div>
   );

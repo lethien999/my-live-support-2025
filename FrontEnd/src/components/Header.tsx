@@ -220,7 +220,7 @@ const Header: React.FC<HeaderProps> = ({ onCartClick }) => {
             )}
 
             <button
-              onClick={() => navigateTo('/chat')}
+              onClick={() => navigateTo('/customer-chat')}
               style={{
                 background: 'none',
                 border: 'none',

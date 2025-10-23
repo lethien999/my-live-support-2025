@@ -43,13 +43,17 @@ export class HybridTokenService {
     role?: string;
     source: 'jwt' | 'database' | 'cache';
   }> {
+    console.log('🔍 HybridTokenService.validateToken called with:', token);
+    
     try {
       // Step 1: Try JWT validation (fastest)
       try {
         const decoded = jwt.verify(token, this.jwtSecret) as any;
+        console.log('✅ JWT validation successful:', decoded);
         
         // Step 2: Check if database token exists and is active
         const dbValidation = await TokenService.validateToken(token);
+        console.log('🔍 Database validation result:', dbValidation);
         
         if (dbValidation.isValid) {
           return {
@@ -62,13 +66,16 @@ export class HybridTokenService {
         }
         
         // JWT valid but database token revoked
+        console.log('❌ JWT valid but database token revoked');
         return {
           isValid: false,
           source: 'jwt'
         };
-      } catch (jwtError) {
+      } catch (jwtError: any) {
+        console.log('❌ JWT validation failed:', jwtError.message);
         // JWT invalid, try database token
         const dbValidation = await TokenService.validateToken(token);
+        console.log('🔍 Database validation result (fallback):', dbValidation);
         
         if (dbValidation.isValid) {
           // Database token valid but JWT expired
@@ -81,12 +88,14 @@ export class HybridTokenService {
           };
         }
         
+        console.log('❌ Both JWT and database validation failed');
         return {
           isValid: false,
           source: 'database'
         };
       }
     } catch (error) {
+      console.log('❌ HybridTokenService validation error:', error);
       return {
         isValid: false,
         source: 'database'

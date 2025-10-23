@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getApiUrl, API_CONFIG } from '../config/api';
 import AuthChatService from '../services/AuthChatService';
+import { navigateTo } from '../utils/navigation';
 // import { mockCategories, mockProducts } from '../data/mockData';
 
 const ProductsPage: React.FC = () => {
@@ -133,10 +134,6 @@ const ProductsPage: React.FC = () => {
     }
   });
 
-  const navigateTo = (path: string) => {
-    window.history.pushState({}, '', path);
-    window.dispatchEvent(new PopStateEvent('popstate'));
-  };
 
   if (loading) {
     return (
